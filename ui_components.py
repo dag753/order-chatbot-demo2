@@ -1,8 +1,64 @@
 import streamlit as st
 from typing import List, Dict, Any
 
-def render_sidebar(menu: Dict[str, Dict[str, Any]], actions: List[str]):
+def display_cart(cart_items: List[Dict[str, Any]]):
+    """Displays the shopping cart in the top right corner of the UI."""
+    # Always display the header (remove early return)
+    
+    # Use markdown to style the cart header
+    st.sidebar.markdown("""
+    <style>
+    .cart-header {
+        text-align: right;
+        color: #4A4A4A;
+        padding: 5px;
+        font-weight: bold;
+    }
+    </style>
+    <div class="cart-header">Your Order</div>
+    """, unsafe_allow_html=True)
+    
+    if not cart_items:
+        # Display "Empty Cart" message when cart is empty
+        st.sidebar.info("Empty Cart")
+        return
+    
+    # Create a dataframe to display the cart items
+    cart_data = []
+    total = 0.0
+    
+    for item in cart_items:
+        item_name = item.get("item", "Unknown item")
+        quantity = item.get("quantity", 1)
+        price = item.get("price", 0.0)
+        options = ", ".join(item.get("options", []))
+        
+        # Calculate item total
+        item_total = quantity * price
+        total += item_total
+        
+        # Add to cart data
+        cart_data.append({
+            "Item": f"{item_name}{' with ' + options if options else ''}",
+            "Qty": quantity,
+            "Price": f"${price:.2f}",
+            "Total": f"${item_total:.2f}"
+        })
+    
+    # Display cart items as a table
+    if cart_data:
+        st.sidebar.dataframe(cart_data, hide_index=True, use_container_width=True)
+        
+        # Display total
+        st.sidebar.markdown(f"<div style='text-align: right; font-weight: bold;'>Total: ${total:.2f}</div>", 
+                   unsafe_allow_html=True)
+
+def render_sidebar(menu: Dict[str, Dict[str, Any]], actions: List[str], cart_items: List[Dict[str, Any]]):
     """Renders the sidebar UI elements for menu management and action logs."""
+    # --- Display Cart at the very top --- 
+    display_cart(cart_items)
+    st.sidebar.divider() # Add divider after cart
+    
     st.sidebar.title("Chatbot Info & Control") # General Title
 
     # Chat actions/logs display first

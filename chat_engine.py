@@ -19,11 +19,13 @@ class ResponseEvent(Event):
     response: str
     action_type: str
     original_query: Optional[str] = None # Add field to carry original query
+    cart_items: Optional[List[Dict[str, Any]]] = None # Add field for cart items
 
 class ChatResponseStopEvent(StopEvent):
     """Custom StopEvent with response and action_type fields."""
     response: str
     action_type: str
+    cart_items: Optional[List[Dict[str, Any]]] = None # Add field for cart items
 
 class FoodOrderingWorkflow(Workflow):
     """
@@ -57,37 +59,60 @@ class FoodOrderingWorkflow(Workflow):
         query = ev.content # Correct way to access StartEvent content
         logger.info(f"Processing query: '{query}'")
 
-        # Determine intent with prompt
+        # Format chat history for the prompt
+        formatted_history = "\n".join([
+            f"{'USER' if msg.role == MessageRole.USER else 'ASSISTANT'}: {msg.content}"
+            for msg in self.chat_history
+        ]) if self.chat_history else "No conversation history yet."
+
+        # Determine intent with prompt, now including history
         router_prompt = f"""
-        You are a restaurant chatbot assistant. Your task is to classify the user's intent and provide an initial response *only* for greetings or irrelevant queries.
+        You are a restaurant chatbot assistant classifying user intent.
+        
+        **ABSOLUTE RULES - APPLY THESE FIRST:**
+        1.  If the user message is a simple, standalone greeting (e.g., "hello", "hi"), the intent is GREETING.
+        2.  If the user message is asking *about the conversation itself* (e.g., "what did I ask?", "what was my last message?", "what did we talk about?"), the intent is HISTORY, regardless of the topic of previous messages.
 
-        **CRITICAL RULE**: If the user's message is a simple, standalone greeting like "hello", "hi", "hey", or "good morning", you MUST classify the intent as GREETING and MUST provide a welcoming response in the 'response' field.
-
-        User message: "{query}"
-
-        Classify the intent into ONE of the following categories:
-        - GREETING: User is initiating the conversation with a simple greeting (e.g., "hello", "hi"). **Follow the CRITICAL RULE above.**
-        - MENU: User is asking about menu items, prices, descriptions, or availability (e.g., "What pizzas do you have?", "How much is the burger?").
-        - ORDER: User wants to create, modify, review, or cancel an order (e.g., "I want to order food", "Add a pizza to my order", "What's in my cart?").
-        - END: User is likely ending the conversation (e.g., "bye", "thank you", "that's all").
-        - IRRELEVANT: Any other request not directly related to the menu, ordering, greetings, or farewells.
-
+        **Conversation History:**
+        {formatted_history}
+        
+        **Current User Message:** "{query}"
+        
+        Given the user message, conversation history, and the absolute rules, classify the intent into ONE of the following:
+        - GREETING: A simple greeting. **Must follow Absolute Rule 1.**
+        - HISTORY: A question *about* the conversation history or previous messages/orders. **Must follow Absolute Rule 2.**
+        - MENU: Asking about menu items/prices/descriptions. *Excludes questions about what was previously discussed.*
+        - ORDER: Requesting to create, modify, review, or cancel an order. *Excludes questions about previous orders already discussed.*
+        - END: Ending the conversation (e.g., "bye", "thank you").
+        - IRRELEVANT: Any other topic not covered above.
+        
         Output Instructions:
-        1. Return your response STRICTLY as a JSON object.
-        2. The JSON object MUST have two keys: "intent" and "response".
-        3. For GREETING intent: Set "intent" to "GREETING" and "response" to a friendly welcome message (e.g., "Hello! How can I help you with the menu or your order?").
-        4. For IRRELEVANT intent: Set "intent" to "IRRELEVANT" and "response" to a polite refusal (e.g., "I can only help with menu items and orders.").
-        5. For MENU, ORDER, or END intents: Set the appropriate "intent" value and set "response" to an empty string (""). Do NOT provide any other response text for these intents.
-
-        Examples:
+        1. Return STRICTLY a JSON object with keys "intent" and "response".
+        2. For GREETING or HISTORY intents: Set the correct "intent". Provide a **concise** response text (under 320 characters) in the "response" field. Use the provided Conversation History context to answer HISTORY questions accurately. Summarize if necessary and offer to provide more detail if relevant.
+        3. For IRRELEVANT intent: Set "intent" to "IRRELEVANT". Provide a **concise**, empathetic refusal/explanation (under 320 characters) in the "response" field.
+        4. For MENU, ORDER, or END intents: Set the correct "intent" and set "response" to an empty string ("").
+        
+        Examples (History examples assume relevant context was in the provided history):
         User message: "hello"
-        Output: {{"intent": "GREETING", "response": "Hello! How can I assist you with the menu or an order?"}}
+        Output: {{"intent": "GREETING", "response": "Hello! How can I help with the menu or your order?"}} # Concise
 
         User message: "What drinks do you have?"
         Output: {{"intent": "MENU", "response": ""}}
 
+        User message: "what did I ask before this?"
+        Output: {{"intent": "HISTORY", "response": "You previously asked about our sandwich options. Need more details on those, or can I help with something else?"}} # Concise, offers detail
+
+        User message: "What was my previous message?"
+        Output: {{"intent": "HISTORY", "response": "Your previous message was asking about drinks. Anything else I can help with?"}} # Concise summary
+
+        User message: "what was the first thing I asked?"
+        Output: {{"intent": "HISTORY", "response": "Looks like your first message was 'Hello'. How can I help now?"}} # Concise answer
+
+        User message: "what did I order last time?"
+        Output: {{"intent": "HISTORY", "response": "We discussed you ordering pizza previously. Want to order that now or see the menu again?"}} # Concise summary
+
         User message: "tell me a joke"
-        Output: {{"intent": "IRRELEVANT", "response": "I can only help with menu items and orders."}}
+        Output: {{"intent": "IRRELEVANT", "response": "Sorry, I can't tell jokes! I'm here for menu questions or orders. Can I help with that?"}} # Concise
 
         User message: "thanks bye"
         Output: {{"intent": "END", "response": ""}}
@@ -121,7 +146,7 @@ class FoodOrderingWorkflow(Workflow):
                 direct_response = response_data.get("response", "") if response_data.get("response") else ""
                 
                 # Validate the extracted data
-                valid_intents = ["menu", "order", "greeting", "end", "irrelevant"]
+                valid_intents = ["menu", "order", "greeting", "end", "irrelevant", "history"]
                 if not intent or intent not in valid_intents:
                     # Default to irrelevant if intent is invalid or missing
                     logger.warning(f"Invalid or missing intent '{intent}', defaulting to 'irrelevant'")
@@ -130,19 +155,23 @@ class FoodOrderingWorkflow(Workflow):
                     if not direct_response:
                          direct_response = "I'm sorry, I encountered an issue. I can only assist with menu questions and food orders."
 
-                # If intent is GREETING or IRRELEVANT, check response validity
-                if intent in ["greeting", "irrelevant"]:
+                # If intent is GREETING, IRRELEVANT, or HISTORY, check response validity
+                if intent in ["greeting", "irrelevant", "history"]:
                    if not isinstance(direct_response, str) or not direct_response.strip():
                        logger.warning(f"Invalid or empty direct response for intent '{intent}': '{direct_response}'. Using fallback message.")
                        # Provide a default response based on the (potentially defaulted) intent
                        if intent == "greeting":
-                            direct_response = "Hello! How can I assist you with the menu or an order?"
+                            direct_response = "Hello! How can I help with the menu or your order?"
+                       elif intent == "history":
+                            direct_response = "I can see you're asking about our previous conversation. How can I help you with our menu or placing an order?"
                        else: # irrelevant
                             direct_response = "I'm sorry, I can only assist with questions about our menu and help you place an order."
                    elif direct_response.strip() in ['{', '}', '[]', '[', ']', '{}', ':', '""', "''", ',', '.']:
                        logger.warning(f"Direct response for intent '{intent}' looks like a fragment: '{direct_response}'. Using fallback message.")
                        if intent == "greeting":
-                            direct_response = "Hello! How can I assist you with the menu or an order?"
+                            direct_response = "Hello! How can I help with the menu or your order?"
+                       elif intent == "history":
+                            direct_response = "I can see you're asking about our previous conversation. How can I help you with our menu or placing an order?"
                        else: # irrelevant
                             direct_response = "I'm sorry, I can only assist with questions about our menu and help you place an order."
                 
@@ -229,6 +258,16 @@ class FoodOrderingWorkflow(Workflow):
                     response=response,
                     action_type=action_type
                 )
+            elif intent == "history":
+                logger.info("Handling history query directly")
+                response = direct_response
+                action_type = "history_query"
+                # Return a ChatResponseStopEvent directly for history
+                result = ChatResponseStopEvent(
+                    result=None,  # Required by StopEvent
+                    response=response,
+                    action_type=action_type
+                )
             elif intent == "irrelevant":
                  logger.info("Handling irrelevant query directly")
                  response = direct_response
@@ -278,34 +317,36 @@ class FoodOrderingWorkflow(Workflow):
                 logger.info(f"Generated detailed menu response: {response_text[:50]}...")
                 return ResponseEvent(
                     response=response_text,
-                    action_type="menu_inquiry" # Final action type
-                    # original_query is no longer needed
+                    action_type="menu_inquiry", # Final action type
+                    cart_items=None # No cart changes for menu inquiries
                 )
             else:
                 logger.error("Original query missing for menu_inquiry_pending")
-                return ResponseEvent(response="Error: Missing query for menu info.", action_type="error")
+                return ResponseEvent(response="Error: Missing query for menu info.", action_type="error", cart_items=None)
                 
         elif ev.action_type == "order_action_pending":
             logger.info("Handling pending order action")
             if ev.original_query:
-                response_text = await self._handle_order_query(ev.original_query)
+                response_text, cart_items = await self._handle_order_query(ev.original_query)
                 logger.info(f"Generated detailed order response: {response_text[:50]}...")
                 return ResponseEvent(
                     response=response_text,
-                    action_type="order_action" # Final action type
+                    action_type="order_action", # Final action type
+                    cart_items=cart_items # Include cart items
                 )
             else:
                  logger.error("Original query missing for order_action_pending")
-                 return ResponseEvent(response="Error: Missing query for order action.", action_type="error")
+                 return ResponseEvent(response="Error: Missing query for order action.", action_type="error", cart_items=None)
                  
         else:
-            # If action type is already final (greeting, end, irrelevant, error), pass through
+            # If action type is already final (greeting, end, irrelevant, error, history), pass through
             # Explicitly create a new event object to avoid potential issues with object identity.
             logger.info(f"Passing through response with final action_type: {ev.action_type} by creating new event")
             return ResponseEvent(
                 response=ev.response,
                 action_type=ev.action_type,
-                original_query=ev.original_query # Ensure all relevant fields are copied
+                original_query=ev.original_query, # Ensure all relevant fields are copied
+                cart_items=None # No cart changes for non-order actions
             )
 
     @step
@@ -320,7 +361,8 @@ class FoodOrderingWorkflow(Workflow):
             result=None,
             # Add our custom fields
             response=ev.response,
-            action_type=ev.action_type
+            action_type=ev.action_type,
+            cart_items=ev.cart_items # Pass through cart items
         )
         logger.info(f"Created ChatResponseStopEvent with fields: response={result.response[:20]}..., action_type={result.action_type}")
         return result
@@ -328,8 +370,20 @@ class FoodOrderingWorkflow(Workflow):
     async def _handle_menu_query(self, query: str) -> str:
         """Handle menu-related queries"""
         menu_template = f"""
-        You are a helpful assistant providing information about menu items.
+        You are a helpful restaurant assistant providing information about menu items.
+        Respond concisely, like a text message (under 320 characters).
+        Summarize information where possible, especially if the user asks for general categories or multiple items.
+        **Use the provided conversation history to understand the context and avoid repeating information unnecessarily.**
+        
+        **Handling Follow-up for "More Details":**
+        - If the user asks for "more details" after you've provided a summary, look at your *immediately preceding message* in the history.
+        - Identify the items you summarized in that message.
+        - Provide the *additional* details (like descriptions, options, ingredients) for *only those items*.
+        - Do NOT repeat the item names and prices from the summary unless essential for context (e.g., listing options with price modifiers).
+        - Keep the response concise and under the character limit.
+        
         Be friendly and informative about prices and descriptions.
+        Use standard text formatting. Avoid complex markdown. Use bold (**) for item names only.
         The complete menu is as follows:
         {self.menu_text}
         """
@@ -358,14 +412,40 @@ class FoodOrderingWorkflow(Workflow):
         """Handle order-related actions"""
         order_template = f"""
         You are an assistant helping with food orders.
-        Based on the menu information and the user's request,
-        help them place or modify their order.
+        Respond concisely, like a text message (under 320 characters).
+        **Use the provided conversation history to understand the current order status and context.**
+        Be clear about prices and options. Summarize complex orders or options if necessary.
+        Offer to provide more detail if needed.
+        If they want something not on the menu, politely inform them it's unavailable.
+        
+        In addition to your text response, you must also manage and return the user's cart state.
+        You need to parse the user's intent and:
+        1. For "add" - add items to the cart
+        2. For "remove" - remove items from the cart
+        3. For "change" - modify existing items (e.g., change quantity, options)
+        4. For "upgrade" - upgrade items (e.g., size, add-ons)
+        5. For "cancel order" - empty the cart
+        6. For "make order" - finalize the cart
+        
+        When responding, output BOTH:
+        1. A conversational text message acknowledging the user's action
+        2. A valid JSON representation of their updated cart
+        
+        The cart should be a JSON array of objects with properties:
+        - "item": string - the menu item name
+        - "quantity": number - how many of this item
+        - "options": array of strings - any options/modifications
+        - "price": number - the unit price of this item including options
+        
+        FORMAT:
+        {{
+          "response": "Your natural language response here",
+          "cart": []
+        }}
+        
+        Based on the menu information and the user's request, help them place or modify their order.
         The complete menu is as follows:
         {self.menu_text}
-
-        Be clear about prices and available options.
-        If they want to order something not on the menu,
-        politely inform them it's not available.
         """
         
         # Generate response
@@ -383,22 +463,53 @@ class FoodOrderingWorkflow(Workflow):
             elapsed = time.time() - start_time
             
             logger.info(f"_handle_order_query: Got response in {elapsed:.2f}s")
-            return response.message.content
+            
+            # Parse response to extract cart information
+            response_content = response.message.content
+            cart_items = []
+            
+            try:
+                # Try to parse the response as JSON
+                if isinstance(response_content, str):
+                    # Extract JSON object using regex for better reliability
+                    import re
+                    # Look for JSON objects in the text
+                    json_matches = re.findall(r'(\{(?:[^{}]|(?:\{[^{}]*\}))*\})', response_content, re.DOTALL)
+                    
+                    if json_matches:
+                        # Try each match until we find a valid JSON object with the expected structure
+                        for json_str in json_matches:
+                            try:
+                                data = json.loads(json_str)
+                                if isinstance(data, dict) and "response" in data:
+                                    # Found a valid JSON object with "response" field
+                                    response_content = data.get("response", "")
+                                    # Extract cart items if available
+                                    if "cart" in data and isinstance(data["cart"], list):
+                                        cart_items = data["cart"]
+                                        logger.info(f"Extracted cart items: {len(cart_items)} items")
+                                    break  # Stop after finding the first valid match
+                            except json.JSONDecodeError:
+                                continue  # Try the next match
+                    else:
+                        logger.warning("No JSON objects found in the response")
+                else:
+                    logger.warning(f"Response content is not a string: {type(response_content)}")
+            except Exception as e:
+                logger.error(f"Error extracting cart data: {type(e).__name__}: {str(e)}")
+                # Continue with original response content
+            
+            return response_content, cart_items
         except Exception as e:
             logger.error(f"_handle_order_query: Error: {type(e).__name__}: {str(e)}")
-            return f"I'm sorry, I had trouble with your order. Error: {str(e)}"
-    
-    async def _handle_general_query(self, query: str) -> str:
-        """Handle general conversation (DEPRECATED - Now handled by GREETING/IRRELEVANT in classify_and_respond)"""
-        # This method is no longer called by the main logic but kept for potential future use or reference.
-        logger.warning("_handle_general_query called, but this path should be deprecated.")
-        return "I'm sorry, I can only assist with questions about our menu and help you place an order."
+            return f"I'm sorry, I had trouble with your order. Error: {str(e)}", []
     
     async def _handle_end_conversation(self, query: str) -> str:
         """Handle end of conversation"""
         end_template = """
         The user seems to be ending the conversation.
-        Respond with a friendly goodbye message that invites them to return.
+        **Consider the conversation history for context if appropriate (e.g., thanking them for an order).**
+        Respond with a friendly, concise goodbye message (under 320 characters) that invites them to return.
         """
         
         messages = self.chat_history + [

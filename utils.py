@@ -22,6 +22,9 @@ def initialize_session_state():
     
     if "current_order" not in st.session_state:
         st.session_state.current_order = []
+        
+    if "current_cart" not in st.session_state:
+        st.session_state.current_cart = []
 
 def menu_to_string(menu):
     """Convert menu dictionary (with categories and options) to a formatted string."""
