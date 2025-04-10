@@ -47,40 +47,54 @@ class FoodOrderingWorkflow(Workflow):
         logger.info(f"FoodOrderingWorkflow initialized with timeout={timeout}")
     
     @step
-    async def classify_and_respond(self, ctx: Context, ev: StartEvent) -> ResponseEvent:
+    async def classify_and_respond(self, ctx: Context, ev: StartEvent) -> Union[ResponseEvent, ChatResponseStopEvent]:
         """
-        First step: Classify intent. If menu/order, return ack message.
-        If greeting/end/irrelevant, return final response directly.
+        First step: Classify intent. 
+        If menu/order, return ResponseEvent with pending action type.
+        If greeting/end/irrelevant, return ChatResponseStopEvent directly to end workflow.
         """
         # Get the query from the start event
         query = ev.content # Correct way to access StartEvent content
         logger.info(f"Processing query: '{query}'")
-        
-        # Determine intent with prompt - REMOVED menu_text from here
+
+        # Determine intent with prompt
         router_prompt = f"""
-        You are a restaurant chatbot assistant. Your primary function is to help users with menu inquiries and placing food orders. Classify the user's intent based on whether it relates to these functions or is a simple greeting/farewell.
+        You are a restaurant chatbot assistant. Your task is to classify the user's intent and provide an initial response *only* for greetings or irrelevant queries.
+
+        **CRITICAL RULE**: If the user's message is a simple, standalone greeting like "hello", "hi", "hey", or "good morning", you MUST classify the intent as GREETING and MUST provide a welcoming response in the 'response' field.
 
         User message: "{query}"
 
-        Classify the intent into one of these categories:
+        Classify the intent into ONE of the following categories:
+        - GREETING: User is initiating the conversation with a simple greeting (e.g., "hello", "hi"). **Follow the CRITICAL RULE above.**
         - MENU: User is asking about menu items, prices, descriptions, or availability (e.g., "What pizzas do you have?", "How much is the burger?").
-        - ORDER: User wants to create, modify, review, or cancel an order (e.g., "I want to order food", "Add a pizza to my order", "What's in my cart?", "Can I place an order?").
-        - GREETING: User is initiating the conversation (e.g., "hello", "hi", "good morning").
+        - ORDER: User wants to create, modify, review, or cancel an order (e.g., "I want to order food", "Add a pizza to my order", "What's in my cart?").
         - END: User is likely ending the conversation (e.g., "bye", "thank you", "that's all").
-        - IRRELEVANT: Any other request, instruction, or question not directly related to the menu, ordering, greetings, or farewells.
+        - IRRELEVANT: Any other request not directly related to the menu, ordering, greetings, or farewells.
 
-        If the intent is GREETING, provide a friendly welcome message.
-        If the intent is IRRELEVANT, provide a polite refusal message stating you can only assist with menu questions and food orders.
+        Output Instructions:
+        1. Return your response STRICTLY as a JSON object.
+        2. The JSON object MUST have two keys: "intent" and "response".
+        3. For GREETING intent: Set "intent" to "GREETING" and "response" to a friendly welcome message (e.g., "Hello! How can I help you with the menu or your order?").
+        4. For IRRELEVANT intent: Set "intent" to "IRRELEVANT" and "response" to a polite refusal (e.g., "I can only help with menu items and orders.").
+        5. For MENU, ORDER, or END intents: Set the appropriate "intent" value and set "response" to an empty string (""). Do NOT provide any other response text for these intents.
 
-        Return your response STRICTLY as a JSON object with the following structure, ensuring no extra text before or after the JSON:
-        {{
-            "intent": "MENU|ORDER|GREETING|END|IRRELEVANT",
-            "response": "Your response text ONLY if intent is GREETING or IRRELEVANT, otherwise empty string"
-        }}
-        Example valid JSON output: {{"intent": "ORDER", "response": ""}}
-        Another valid example: {{"intent": "IRRELEVANT", "response": "I can only help with menu items and orders."}}
+        Examples:
+        User message: "hello"
+        Output: {{"intent": "GREETING", "response": "Hello! How can I assist you with the menu or an order?"}}
+
+        User message: "What drinks do you have?"
+        Output: {{"intent": "MENU", "response": ""}}
+
+        User message: "tell me a joke"
+        Output: {{"intent": "IRRELEVANT", "response": "I can only help with menu items and orders."}}
+
+        User message: "thanks bye"
+        Output: {{"intent": "END", "response": ""}}
+
+        Ensure no extra text before or after the JSON object.
         """
-        
+
         llm = OpenAI(model="gpt-4o", temperature=0.0, request_timeout=30)
         logger.info("Sending intent classification request to OpenAI")
         
@@ -169,14 +183,14 @@ class FoodOrderingWorkflow(Workflow):
         # Generate appropriate response or acknowledgment based on intent
         response = ""
         action_type = ""
-        final_response_event = None
+        result = None
 
         try:
             if intent == "menu":
                 logger.info("Intent: MENU. Returning acknowledgment.")
                 response = "Give us a moment while we research that for you."
                 action_type = "menu_inquiry_pending" # Temporary type
-                final_response_event = ResponseEvent(
+                result = ResponseEvent(
                     response=response,
                     action_type=action_type,
                     original_query=query # Pass query for next step
@@ -189,40 +203,61 @@ class FoodOrderingWorkflow(Workflow):
                 else:
                      response = "Give us a moment while we get that order ready for you."
                 action_type = "order_action_pending" # Temporary type
-                final_response_event = ResponseEvent(
+                result = ResponseEvent(
                     response=response,
                     action_type=action_type,
                     original_query=query # Pass query for next step
                 )
             elif intent == "greeting":
-                logger.info("Handling greeting directly from router")
+                logger.info("Handling greeting directly")
                 response = direct_response
                 action_type = "greeting"
-                final_response_event = ResponseEvent(response=response, action_type=action_type)
+                # Return a ChatResponseStopEvent directly for greeting
+                result = ChatResponseStopEvent(
+                    result=None,  # Required by StopEvent
+                    response=response,
+                    action_type=action_type
+                )
             elif intent == "end":
                 logger.info("Handling end conversation")
                 # Call _handle_end_conversation directly as it's simple
                 response = await self._handle_end_conversation(query)
                 action_type = "end_conversation"
-                final_response_event = ResponseEvent(response=response, action_type=action_type)
+                # Return a ChatResponseStopEvent directly for end
+                result = ChatResponseStopEvent(
+                    result=None,  # Required by StopEvent
+                    response=response,
+                    action_type=action_type
+                )
             elif intent == "irrelevant":
-                 logger.info("Handling irrelevant query directly from router")
+                 logger.info("Handling irrelevant query directly")
                  response = direct_response
                  action_type = "irrelevant_query"
-                 final_response_event = ResponseEvent(response=response, action_type=action_type)
+                 # Return a ChatResponseStopEvent directly for irrelevant
+                 result = ChatResponseStopEvent(
+                    result=None,  # Required by StopEvent
+                    response=response,
+                    action_type=action_type
+                 )
             else: # Should not happen due to validation, but good to have a fallback
                 logger.error(f"Reached unexpected else block for intent: {intent}")
                 response = "I'm sorry, I'm not sure how to handle that. I can assist with menu questions and orders."
                 action_type = "error"
-                final_response_event = ResponseEvent(response=response, action_type=action_type)
+                # Return a ChatResponseStopEvent directly for error
+                result = ChatResponseStopEvent(
+                    result=None,  # Required by StopEvent
+                    response=response,
+                    action_type=action_type
+                )
 
             logger.info(f"Step 1 Result: Type='{action_type}', Response='{response[:50]}...'")
-            return final_response_event
+            return result
             
         except Exception as e:
             logger.error(f"Error in classify_and_respond logic block: {type(e).__name__}: {str(e)}")
             # Provide a generic refusal in case of errors in handlers
-            return ResponseEvent(
+            return ChatResponseStopEvent(
+                result=None,  # Required by StopEvent
                 response="I'm sorry, I encountered an error and cannot process your request. I can only assist with menu questions and food orders.",
                 action_type="error"
             )
@@ -232,7 +267,7 @@ class FoodOrderingWorkflow(Workflow):
         """
         Second step: If the previous step returned a pending action type,
         generate the detailed response using the appropriate handler.
-        Otherwise, pass the event through.
+        Otherwise, pass the event through by creating a new event object.
         """
         logger.info(f"Entering generate_detailed_response with action_type: {ev.action_type}")
         
@@ -265,8 +300,13 @@ class FoodOrderingWorkflow(Workflow):
                  
         else:
             # If action type is already final (greeting, end, irrelevant, error), pass through
-            logger.info(f"Passing through response with final action_type: {ev.action_type}")
-            return ev
+            # Explicitly create a new event object to avoid potential issues with object identity.
+            logger.info(f"Passing through response with final action_type: {ev.action_type} by creating new event")
+            return ResponseEvent(
+                response=ev.response,
+                action_type=ev.action_type,
+                original_query=ev.original_query # Ensure all relevant fields are copied
+            )
 
     @step
     async def finalize(self, ctx: Context, ev: ResponseEvent) -> ChatResponseStopEvent:
@@ -391,10 +431,12 @@ def create_chat_engine(menu: Dict[str, Dict[str, Any]], chat_history: List[Dict[
     Returns:
         A workflow object that can be used to process chat messages
     """
-    # Convert chat history to the format expected by the workflow
     formatted_chat_history = []
     if chat_history:
-        for message in chat_history:
+        # Keep only the most recent 20 messages
+        recent_history = chat_history[-20:]
+        logger.info(f"Using the last {len(recent_history)} messages out of {len(chat_history)} for history.")
+        for message in recent_history:
             role = MessageRole.USER if message["role"] == "user" else MessageRole.ASSISTANT
             formatted_chat_history.append(ChatMessage(role=role, content=message["content"]))
     
