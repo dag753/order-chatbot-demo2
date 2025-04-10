@@ -1,0 +1,160 @@
+{
+    "Sandwiches": {
+        "Classic Chicken Sandwich": {
+            "description": "Crispy fried chicken breast, pickles, mayo on a brioche bun.",
+            "price": 8.99,
+            "options": {
+                "add_cheese": 1.00,
+                "add_bacon": 1.50,
+                "make_it_spicy": 0.50,
+                "substitute_grilled_chicken": 0.00
+            }
+        },
+        "Spicy Deluxe Chicken Sandwich": {
+            "description": "Spicy crispy fried chicken breast, pepper jack cheese, lettuce, tomato, spicy mayo on a brioche bun.",
+            "price": 9.99,
+             "options": {
+                "add_bacon": 1.50,
+                "extra_spicy": 0.75,
+                "substitute_grilled_chicken": 0.00
+            }
+        },
+        "Grilled Chicken Club": {
+            "description": "Grilled chicken breast, bacon, lettuce, tomato, swiss cheese, honey mustard on sourdough.",
+            "price": 10.49,
+             "options": {
+                "add_avocado": 1.50,
+                "remove_bacon": 0.00
+            }
+        },
+        "BBQ Chicken Sandwich": {
+            "description": "Grilled chicken breast, BBQ sauce, cheddar cheese, crispy onion straws on a brioche bun.",
+            "price": 9.79,
+            "options": {
+                 "add_bacon": 1.50,
+                 "substitute_fried_chicken": 0.00
+            }
+        },
+         "Chicken Parm Sandwich": {
+            "description": "Crispy chicken breast, marinara sauce, melted mozzarella, parmesan on a hoagie roll.",
+            "price": 10.99,
+             "options": {
+                 "add_peppers": 0.75
+            }
+        },
+        "Buffalo Chicken Sandwich": {
+            "description": "Crispy chicken breast tossed in buffalo sauce, lettuce, tomato, ranch dressing on a brioche bun.",
+            "price": 9.49,
+             "options": {
+                 "add_blue_cheese_crumbles": 1.00,
+                 "make_it_mild": 0.00,
+                 "substitute_grilled_chicken": 0.00
+            }
+        },
+        "Chicken Salad Sandwich": {
+            "description": "House-made chicken salad, lettuce, tomato on whole wheat bread.",
+            "price": 8.49,
+             "options": {
+                 "add_bacon": 1.50,
+                 "serve_on_croissant": 1.00
+            }
+        }
+    },
+    "Sides": {
+        "French Fries": {
+            "description": "Classic crispy french fries.",
+            "price": 3.49,
+            "options": {
+                "add_cheese_sauce": 1.00,
+                "add_chili": 1.50
+            }
+        },
+        "Waffle Fries": {
+             "description": "Crispy waffle-cut fries.",
+            "price": 3.99,
+             "options": {
+                "add_seasoning": 0.50
+            }
+        },
+        "Onion Rings": {
+            "description": "Beer-battered onion rings.",
+            "price": 4.49
+        },
+        "Mac & Cheese": {
+            "description": "Creamy cheddar mac & cheese.",
+            "price": 4.99,
+             "options": {
+                "add_bacon_bits": 1.00
+            }
+        },
+        "Coleslaw": {
+            "description": "Classic creamy coleslaw.",
+            "price": 2.99
+        },
+        "Side Salad": {
+            "description": "Mixed greens, tomato, cucumber with choice of dressing (Ranch, Vinaigrette, Caesar).",
+            "price": 3.99
+        },
+         "Fried Pickles": {
+            "description": "Crispy fried pickle chips served with ranch.",
+            "price": 5.49
+        }
+    },
+    "Drinks": {
+        "Soda (Fountain)": {
+            "description": "Coke, Diet Coke, Sprite, Dr Pepper, Lemonade.",
+            "price": 2.49
+        },
+        "Iced Tea": {
+            "description": "Sweet or Unsweet.",
+            "price": 2.49
+        },
+        "Bottled Water": {
+            "description": "Spring water.",
+            "price": 1.99
+        },
+        "Milkshake (Vanilla)": {
+            "description": "Classic vanilla milkshake.",
+            "price": 4.99
+        },
+         "Milkshake (Chocolate)": {
+            "description": "Rich chocolate milkshake.",
+            "price": 4.99
+        },
+         "Milkshake (Strawberry)": {
+            "description": "Sweet strawberry milkshake.",
+            "price": 4.99
+        }
+    },
+    "Kids Menu": {
+        "Chicken Nuggets (6 pcs)": {
+            "description": "Served with fries and choice of dipping sauce (Ketchup, BBQ, Honey Mustard).",
+            "price": 6.99
+        },
+        "Mini Chicken Slider": {
+            "description": "Small fried chicken slider with pickles, served with fries.",
+            "price": 6.49
+        },
+         "Grilled Cheese": {
+            "description": "Classic grilled cheese on white bread, served with fries.",
+            "price": 5.99
+        }
+    },
+    "Sauces (Extra)": {
+        "Ketchup Packet": { "price": 0.00 },
+        "Mustard Packet": { "price": 0.00 },
+        "Mayonnaise Packet": { "price": 0.00 },
+        "Ranch Cup": { "price": 0.50 },
+        "BBQ Sauce Cup": { "price": 0.50 },
+        "Honey Mustard Cup": { "price": 0.50 },
+        "Spicy Mayo Cup": { "price": 0.75 },
+        "Buffalo Sauce Cup": { "price": 0.75 }
+    },
+     "Substitutions": {
+         "Add Grilled Onions": { "price": 0.75 },
+         "Add Tomato Slice": { "price": 0.50 },
+         "Add Lettuce": {"price": 0.25 },
+         "Remove Pickles": {"price": 0.00 },
+         "Gluten-Free Bun": {"price": 1.50}
+     }
+} 
