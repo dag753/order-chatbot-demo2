@@ -636,7 +636,10 @@ class FoodOrderingWorkflow(Workflow):
         
         **Instructions:**
         1. If the cart is empty, tell them they need to add items first.
-        2. If there are items in the cart and the user is finishing their order without explicitly confirming it, summarize the items and total price, ask for confirmation, and set status to "PENDING CONFIRMATION".
+        2. If there are items in the cart and the user is finishing their order without explicitly confirming it: 
+           - Summarize the items and **calculate the total price** based on the `price` and `quantity` of each item in the provided `cart` list.
+           - Ask for confirmation.
+           - Set status to "PENDING CONFIRMATION".
         3. If the user is explicitly confirming a previous confirmation request, thank them, set status to "CONFIRMED".
         
         FORMAT (empty cart):
@@ -648,7 +651,7 @@ class FoodOrderingWorkflow(Workflow):
         
         FORMAT (items in cart, user is finishing order but hasn't confirmed):
         {{
-          "response": "Your order contains [summary of items]. Total: $XX.XX. Would you like to confirm this order?",
+          "response": "Your order contains [summary of items]. Total: $[calculated total price]. Would you like to confirm this order?",
           "cart": [existing cart items],
           "cart_status": "PENDING CONFIRMATION"
         }}
@@ -660,7 +663,7 @@ class FoodOrderingWorkflow(Workflow):
           "cart_status": "CONFIRMED"
         }}
         
-        Based on the cart contents and user message, provide the appropriate response.
+        Based on the cart contents and user message, provide the appropriate response. Ensure the total price is calculated correctly.
         IMPORTANT: Each cart item MUST be a dictionary with "item", "quantity", "price", and "options" fields. The "options" field must be a list.
         Example of a valid cart item: {{"item": "Burger", "quantity": 1, "price": 8.99, "options": ["extra cheese"]}}
         """
