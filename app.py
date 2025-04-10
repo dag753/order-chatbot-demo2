@@ -149,6 +149,7 @@ async def handle_chat_submission(prompt: str):
     action_type = "error" # Default if response_event is None or lacks type
     initial_response_handled = False # Flag
     cart_items = None # Initialize cart_items as None
+    cart_status = None # Initialize cart_status as None
 
     try:
         if response_event is None or not isinstance(response_event, ChatResponseStopEvent):
@@ -159,6 +160,8 @@ async def handle_chat_submission(prompt: str):
             initial_message_content = response_event.response
             # Extract cart items if available
             cart_items = response_event.cart_items
+            # Extract cart status if available
+            cart_status = response_event.cart_status
             
             logger.info(f"Initial response text (first 50 chars): {initial_message_content[:50]}...")
             
@@ -194,11 +197,16 @@ async def handle_chat_submission(prompt: str):
         # Update cart state if cart items were returned (even if empty - empty cart is valid)
         if cart_items is not None:
             st.session_state.current_cart = cart_items
-            if action_type == "order_action":
+            if action_type == "order_action" or action_type == "order_confirmation":
                 if not cart_items:
                     st.session_state.actions.append("Cart: Order canceled/emptied")
                 else:
                     st.session_state.actions.append(f"Cart: Updated with {len(cart_items)} items")
+                    
+        # Update cart status if provided
+        if cart_status is not None:
+            st.session_state.cart_status = cart_status
+            st.session_state.actions.append(f"Cart Status: Changed to {cart_status}")
 
     except Exception as e:
         # Catch errors during initial display/handling
@@ -213,7 +221,7 @@ async def handle_chat_submission(prompt: str):
                  st.session_state.actions.append("Action: display_error")
 
     # --- Stage 2: Handle Pending Actions (if applicable) ---
-    if action_type in ["menu_inquiry_pending", "order_action_pending"]:
+    if action_type in ["menu_inquiry_pending", "order_action_pending", "order_confirmation_pending"]:
         logger.info(f"Handling pending action: {action_type}")
         # Create placeholder for the second message
         stage2_placeholder = st.chat_message("assistant")
@@ -224,6 +232,7 @@ async def handle_chat_submission(prompt: str):
                 detailed_response_content = ""
                 final_action_type = "error" # Default for stage 2
                 stage2_cart_items = None # For stage 2 cart items
+                stage2_cart_status = None # For stage 2 cart status
 
                 try:
                     # Call the appropriate handler directly
@@ -241,6 +250,21 @@ async def handle_chat_submission(prompt: str):
                                 st.session_state.actions.append("Cart: Order canceled/emptied")
                             else:
                                 st.session_state.actions.append(f"Cart: Updated with {len(stage2_cart_items)} items")
+                    elif action_type == "order_confirmation_pending":
+                        detailed_response_content, stage2_cart_items, stage2_cart_status = await chat_workflow._handle_order_confirmation(original_prompt)
+                        final_action_type = "order_confirmation"
+                        # Update cart state if cart items were returned
+                        if stage2_cart_items is not None:
+                            st.session_state.current_cart = stage2_cart_items
+                            if not stage2_cart_items:
+                                st.session_state.actions.append("Cart: Order canceled/emptied")
+                            else:
+                                st.session_state.actions.append(f"Cart: Updated with {len(stage2_cart_items)} items")
+                                
+                        # Update cart status if provided
+                        if stage2_cart_status is not None:
+                            st.session_state.cart_status = stage2_cart_status
+                            st.session_state.actions.append(f"Cart Status: Changed to {stage2_cart_status}")
 
                     # Basic validation/cleaning
                     if isinstance(detailed_response_content, str) and \
@@ -315,6 +339,10 @@ def main():
     # Make sure we have a field for current cart
     if 'current_cart' not in st.session_state:
         st.session_state.current_cart = []
+        
+    # Make sure we have a cart status field
+    if 'cart_status' not in st.session_state:
+        st.session_state.cart_status = "OPEN"
     
     # Render sidebar using the component function
     render_sidebar(st.session_state.menu, st.session_state.actions, st.session_state.current_cart)
