@@ -1,21 +1,37 @@
 import streamlit as st
 from typing import List, Dict, Any
+import logging
 
 def display_cart(cart_items: List[Dict[str, Any]]):
     """Displays the shopping cart in the top right corner of the UI."""
-    # Always display the header (remove early return)
+    # Get cart status from session state
+    cart_status = st.session_state.get("cart_status", "OPEN")
     
-    # Use markdown to style the cart header
-    st.sidebar.markdown("""
+    # Define status colors
+    status_colors = {
+        "OPEN": "#4A4A4A",  # Default gray
+        "PENDING CONFIRMATION": "#FFA500",  # Orange
+        "CONFIRMED": "#00AA00"  # Green
+    }
+    
+    status_color = status_colors.get(cart_status, "#4A4A4A")
+    
+    # Use markdown to style the cart header with status
+    st.sidebar.markdown(f"""
     <style>
-    .cart-header {
+    .cart-header {{
         text-align: right;
-        color: #4A4A4A;
+        color: {status_color};
         padding: 5px;
         font-weight: bold;
-    }
+    }}
+    .cart-status {{
+        color: {status_color};
+        font-weight: bold;
+    }}
     </style>
     <div class="cart-header">Your Order</div>
+    <div class="cart-status">Status: {cart_status}</div>
     """, unsafe_allow_html=True)
     
     if not cart_items:
@@ -28,10 +44,16 @@ def display_cart(cart_items: List[Dict[str, Any]]):
     total = 0.0
     
     for item in cart_items:
+        # Add type checking to handle case where item might be a string
+        if not isinstance(item, dict):
+            # Log error and skip this item
+            logging.warning(f"Invalid cart item type: {type(item)} - {item}")
+            continue
+            
         item_name = item.get("item", "Unknown item")
         quantity = item.get("quantity", 1)
         price = item.get("price", 0.0)
-        options = ", ".join(item.get("options", []))
+        options = ", ".join(item.get("options", []) if isinstance(item.get("options"), list) else [])
         
         # Calculate item total
         item_total = quantity * price
@@ -50,7 +72,7 @@ def display_cart(cart_items: List[Dict[str, Any]]):
         st.sidebar.dataframe(cart_data, hide_index=True, use_container_width=True)
         
         # Display total
-        st.sidebar.markdown(f"<div style='text-align: right; font-weight: bold;'>Total: ${total:.2f}</div>", 
+        st.sidebar.markdown(f"<div style='text-align: right; font-weight: bold; color: {status_color};'>Total: ${total:.2f}</div>", 
                    unsafe_allow_html=True)
 
 def render_sidebar(menu: Dict[str, Dict[str, Any]], actions: List[str], cart_items: List[Dict[str, Any]]):

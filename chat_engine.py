@@ -20,12 +20,14 @@ class ResponseEvent(Event):
     action_type: str
     original_query: Optional[str] = None # Add field to carry original query
     cart_items: Optional[List[Dict[str, Any]]] = None # Add field for cart items
+    cart_status: Optional[str] = None # Add field for cart status
 
 class ChatResponseStopEvent(StopEvent):
     """Custom StopEvent with response and action_type fields."""
     response: str
     action_type: str
     cart_items: Optional[List[Dict[str, Any]]] = None # Add field for cart items
+    cart_status: Optional[str] = None # Add field for cart status
 
 class FoodOrderingWorkflow(Workflow):
     """
@@ -72,6 +74,7 @@ class FoodOrderingWorkflow(Workflow):
         **ABSOLUTE RULES - APPLY THESE FIRST:**
         1.  If the user message is a simple, standalone greeting (e.g., "hello", "hi"), the intent is GREETING.
         2.  If the user message is asking *about the conversation itself* (e.g., "what did I ask?", "what was my last message?", "what did we talk about?"), the intent is HISTORY, regardless of the topic of previous messages.
+        3.  If the user indicates they are done ordering with phrases like "nothing else", "that's all", "I'm done", "that's it", or similar, the intent is ORDER_CONFIRMATION (not END).
 
         **Conversation History:**
         {formatted_history}
@@ -83,14 +86,15 @@ class FoodOrderingWorkflow(Workflow):
         - HISTORY: A question *about* the conversation history or previous messages/orders. **Must follow Absolute Rule 2.**
         - MENU: Asking about menu items/prices/descriptions. *Excludes questions about what was previously discussed.*
         - ORDER: Requesting to create, modify, review, or cancel an order. *Excludes questions about previous orders already discussed.*
-        - END: Ending the conversation (e.g., "bye", "thank you").
+        - ORDER_CONFIRMATION: Confirming a pending order (e.g., "confirm my order", "yes I want to order", "place my order", "I confirm", "that's correct") or indicating they are done ordering (e.g., "nothing else", "that's all", "I'm done"). **Must follow Absolute Rule 3.**
+        - END: Ending the conversation (e.g., "bye", "thank you") without intent to complete an order. This is ONLY for final goodbyes, not for completing an order.
         - IRRELEVANT: Any other topic not covered above.
         
         Output Instructions:
         1. Return STRICTLY a JSON object with keys "intent" and "response".
         2. For GREETING or HISTORY intents: Set the correct "intent". Provide a **concise** response text (under 320 characters) in the "response" field. Use the provided Conversation History context to answer HISTORY questions accurately. Summarize if necessary and offer to provide more detail if relevant.
         3. For IRRELEVANT intent: Set "intent" to "IRRELEVANT". Provide a **concise**, empathetic refusal/explanation (under 320 characters) in the "response" field.
-        4. For MENU, ORDER, or END intents: Set the correct "intent" and set "response" to an empty string ("").
+        4. For MENU, ORDER, ORDER_CONFIRMATION, or END intents: Set the correct "intent" and set "response" to an empty string ("").
         
         Examples (History examples assume relevant context was in the provided history):
         User message: "hello"
@@ -98,6 +102,21 @@ class FoodOrderingWorkflow(Workflow):
 
         User message: "What drinks do you have?"
         Output: {{"intent": "MENU", "response": ""}}
+
+        User message: "I'd like to confirm my order"
+        Output: {{"intent": "ORDER_CONFIRMATION", "response": ""}}
+
+        User message: "Yes I want to place this order"
+        Output: {{"intent": "ORDER_CONFIRMATION", "response": ""}}
+        
+        User message: "nothing else"
+        Output: {{"intent": "ORDER_CONFIRMATION", "response": ""}}
+        
+        User message: "that's all"
+        Output: {{"intent": "ORDER_CONFIRMATION", "response": ""}}
+        
+        User message: "I'm done"
+        Output: {{"intent": "ORDER_CONFIRMATION", "response": ""}}
 
         User message: "what did I ask before this?"
         Output: {{"intent": "HISTORY", "response": "You previously asked about our sandwich options. Need more details on those, or can I help with something else?"}} # Concise, offers detail
@@ -146,7 +165,7 @@ class FoodOrderingWorkflow(Workflow):
                 direct_response = response_data.get("response", "") if response_data.get("response") else ""
                 
                 # Validate the extracted data
-                valid_intents = ["menu", "order", "greeting", "end", "irrelevant", "history"]
+                valid_intents = ["menu", "order", "greeting", "end", "irrelevant", "history", "order_confirmation"]
                 if not intent or intent not in valid_intents:
                     # Default to irrelevant if intent is invalid or missing
                     logger.warning(f"Invalid or missing intent '{intent}', defaulting to 'irrelevant'")
@@ -236,6 +255,15 @@ class FoodOrderingWorkflow(Workflow):
                     response=response,
                     action_type=action_type,
                     original_query=query # Pass query for next step
+                )
+            elif intent == "order_confirmation":
+                logger.info("Intent: ORDER_CONFIRMATION. Handling order confirmation.")
+                response = "Confirming your order..."
+                action_type = "order_confirmation_pending"
+                result = ResponseEvent(
+                    response=response,
+                    action_type=action_type,
+                    original_query=query
                 )
             elif intent == "greeting":
                 logger.info("Handling greeting directly")
@@ -337,6 +365,21 @@ class FoodOrderingWorkflow(Workflow):
             else:
                  logger.error("Original query missing for order_action_pending")
                  return ResponseEvent(response="Error: Missing query for order action.", action_type="error", cart_items=None)
+        
+        elif ev.action_type == "order_confirmation_pending":
+            logger.info("Handling pending order confirmation")
+            if ev.original_query:
+                response_text, cart_items, cart_status = await self._handle_order_confirmation(ev.original_query)
+                logger.info(f"Generated order confirmation response: {response_text[:50]}...")
+                return ResponseEvent(
+                    response=response_text,
+                    action_type="order_confirmation", # Final action type
+                    cart_items=cart_items, # Include cart items
+                    cart_status=cart_status # Include updated cart status
+                )
+            else:
+                logger.error("Original query missing for order_confirmation_pending")
+                return ResponseEvent(response="Error: Missing query for order confirmation.", action_type="error", cart_items=None)
                  
         else:
             # If action type is already final (greeting, end, irrelevant, error, history), pass through
@@ -346,7 +389,8 @@ class FoodOrderingWorkflow(Workflow):
                 response=ev.response,
                 action_type=ev.action_type,
                 original_query=ev.original_query, # Ensure all relevant fields are copied
-                cart_items=None # No cart changes for non-order actions
+                cart_items=None, # No cart changes for non-order actions
+                cart_status=ev.cart_status # Pass through cart status
             )
 
     @step
@@ -362,7 +406,8 @@ class FoodOrderingWorkflow(Workflow):
             # Add our custom fields
             response=ev.response,
             action_type=ev.action_type,
-            cart_items=ev.cart_items # Pass through cart items
+            cart_items=ev.cart_items, # Pass through cart items
+            cart_status=ev.cart_status # Pass through cart status
         )
         logger.info(f"Created ChatResponseStopEvent with fields: response={result.response[:20]}..., action_type={result.action_type}")
         return result
@@ -530,6 +575,177 @@ class FoodOrderingWorkflow(Workflow):
         except Exception as e:
             logger.error(f"_handle_end_conversation: Error: {type(e).__name__}: {str(e)}")
             return f"I'm sorry, I had trouble saying goodbye. Error: {str(e)}"
+
+    async def _handle_order_confirmation(self, query: str) -> tuple:
+        """Handle order confirmation actions"""
+        current_cart = self.chat_history[-1].content if self.chat_history and hasattr(self.chat_history[-1], 'content') else "[]"
+        
+        # Try to extract cart from the conversation history
+        try:
+            cart_items = []
+            # Look for cart items in the chat history
+            for msg in reversed(self.chat_history):
+                if hasattr(msg, 'content') and isinstance(msg.content, str):
+                    # Look for JSON objects in the content
+                    import re
+                    json_matches = re.findall(r'(\{(?:[^{}]|(?:\{[^{}]*\}))*\})', msg.content, re.DOTALL)
+                    for json_str in json_matches:
+                        try:
+                            data = json.loads(json_str)
+                            if isinstance(data, dict) and "cart" in data and isinstance(data["cart"], list):
+                                cart_items = data["cart"]
+                                break
+                        except json.JSONDecodeError:
+                            continue
+                if cart_items:  # Break outer loop if cart found
+                    break
+                    
+            # Ensure all cart items are dictionaries
+            validated_cart_items = []
+            for item in cart_items:
+                if isinstance(item, dict):
+                    # Ensure required fields exist
+                    if "item" not in item:
+                        item["item"] = "Unknown item"
+                    if "quantity" not in item:
+                        item["quantity"] = 1
+                    if "price" not in item:
+                        item["price"] = 0.0
+                    if "options" not in item or not isinstance(item["options"], list):
+                        item["options"] = []
+                    validated_cart_items.append(item)
+                else:
+                    logger.warning(f"Skipping invalid cart item: {item}")
+            
+            cart_items = validated_cart_items
+                    
+        except Exception as e:
+            logger.error(f"Error extracting cart from history: {str(e)}")
+            cart_items = []
+            
+        confirmation_template = f"""
+        You are a helpful restaurant assistant confirming an order.
+        Respond concisely, like a text message (under 320 characters).
+        
+        **User's current message:** "{query}"
+        
+        **Order confirmation context:**
+        When the user says messages like "nothing else", "that's all", "I'm done", or "checkout", this means they want to finish ordering and are ready to confirm their order. If this is the case, summarize their order and ask for final confirmation.
+        
+        When the user says things like "yes", "confirm", "approved", "correct", or similar phrases, they are confirming their order. If you determine this is a confirmation, mark the order as CONFIRMED and thank them.
+        
+        **Instructions:**
+        1. If the cart is empty, tell them they need to add items first.
+        2. If there are items in the cart and the user is finishing their order without explicitly confirming it: 
+           - Summarize the items and **calculate the total price** based on the `price` and `quantity` of each item in the provided `cart` list.
+           - Ask for confirmation.
+           - Set status to "PENDING CONFIRMATION".
+        3. If the user is explicitly confirming a previous confirmation request, thank them, set status to "CONFIRMED".
+        
+        FORMAT (empty cart):
+        {{
+          "response": "Your cart is empty. Please add items before confirming your order.",
+          "cart": [],
+          "cart_status": "OPEN"
+        }}
+        
+        FORMAT (items in cart, user is finishing order but hasn't confirmed):
+        {{
+          "response": "Your order contains [summary of items]. Total: $[calculated total price]. Would you like to confirm this order?",
+          "cart": [existing cart items],
+          "cart_status": "PENDING CONFIRMATION"
+        }}
+        
+        FORMAT (user confirming order):
+        {{
+          "response": "Thank you! Your order has been confirmed and will be ready shortly.",
+          "cart": [existing cart items],
+          "cart_status": "CONFIRMED"
+        }}
+        
+        Based on the cart contents and user message, provide the appropriate response. Ensure the total price is calculated correctly.
+        IMPORTANT: Each cart item MUST be a dictionary with "item", "quantity", "price", and "options" fields. The "options" field must be a list.
+        Example of a valid cart item: {{"item": "Burger", "quantity": 1, "price": 8.99, "options": ["extra cheese"]}}
+        """
+        
+        # Generate response
+        messages = self.chat_history + [
+            ChatMessage(role=MessageRole.USER, content=query),
+            ChatMessage(role=MessageRole.SYSTEM, content=confirmation_template)
+        ]
+        
+        logger.info("_handle_order_confirmation: Sending request to OpenAI")
+        llm = OpenAI(model="gpt-4o", temperature=0.7, request_timeout=30)
+        try:
+            # Measure response time for confirmation
+            start_time = time.time()
+            response = await llm.achat(messages)
+            elapsed = time.time() - start_time
+            
+            logger.info(f"_handle_order_confirmation: Got response in {elapsed:.2f}s")
+            
+            # Parse response to extract cart and status information
+            response_content = response.message.content
+            # Use the validated cart items as a fallback
+            final_cart_items = cart_items.copy()
+            cart_status = "OPEN"  # Default status
+            
+            try:
+                # Try to parse the response as JSON
+                if isinstance(response_content, str):
+                    # Extract JSON object using regex for better reliability
+                    import re
+                    # Look for JSON objects in the text
+                    json_matches = re.findall(r'(\{(?:[^{}]|(?:\{[^{}]*\}))*\})', response_content, re.DOTALL)
+                    
+                    if json_matches:
+                        # Try each match until we find a valid JSON object with the expected structure
+                        for json_str in json_matches:
+                            try:
+                                data = json.loads(json_str)
+                                if isinstance(data, dict) and "response" in data:
+                                    # Found a valid JSON object with "response" field
+                                    response_content = data.get("response", "")
+                                    # Extract cart items if available
+                                    if "cart" in data and isinstance(data["cart"], list):
+                                        extracted_cart = data["cart"]
+                                        # Validate extracted cart items
+                                        validated_extracted_cart = []
+                                        for item in extracted_cart:
+                                            if isinstance(item, dict):
+                                                # Ensure required fields exist
+                                                if "item" not in item:
+                                                    item["item"] = "Unknown item"
+                                                if "quantity" not in item:
+                                                    item["quantity"] = 1
+                                                if "price" not in item:
+                                                    item["price"] = 0.0
+                                                if "options" not in item or not isinstance(item["options"], list):
+                                                    item["options"] = []
+                                                validated_extracted_cart.append(item)
+                                            else:
+                                                logger.warning(f"Skipping invalid extracted cart item: {item}")
+                                        final_cart_items = validated_extracted_cart
+                                        logger.info(f"Extracted cart items: {len(final_cart_items)} items")
+                                    # Extract cart status if available
+                                    if "cart_status" in data and isinstance(data["cart_status"], str):
+                                        cart_status = data["cart_status"]
+                                        logger.info(f"Extracted cart status: {cart_status}")
+                                    break  # Stop after finding the first valid match
+                            except json.JSONDecodeError:
+                                continue  # Try the next match
+                    else:
+                        logger.warning("No JSON objects found in the response")
+                else:
+                    logger.warning(f"Response content is not a string: {type(response_content)}")
+            except Exception as e:
+                logger.error(f"Error extracting cart/status data: {type(e).__name__}: {str(e)}")
+                # Continue with original response content
+            
+            return response_content, final_cart_items, cart_status
+        except Exception as e:
+            logger.error(f"_handle_order_confirmation: Error: {type(e).__name__}: {str(e)}")
+            return f"I'm sorry, I had trouble confirming your order. Error: {str(e)}", [], "OPEN"
 
 def create_chat_engine(menu: Dict[str, Dict[str, Any]], chat_history: List[Dict[str, str]] = None):
     """
