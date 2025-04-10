@@ -4,6 +4,7 @@ import asyncio
 import logging
 import sys
 import time
+import json
 from dotenv import load_dotenv
 from llama_index.core.workflow import StartEvent, StopEvent
 from chat_engine import create_chat_engine, ChatResponseStopEvent
@@ -151,7 +152,7 @@ def main():
     for i, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             # Show the message content
-            st.write(message["content"])
+            st.markdown(message["content"], unsafe_allow_html=False)
             
             # If this is an assistant message and it has a corresponding response time, show it
             if message["role"] == "assistant" and i in st.session_state.response_times:
@@ -165,72 +166,142 @@ def main():
         
         # Display user message
         with st.chat_message("user"):
-            st.write(prompt)
+            st.markdown(prompt, unsafe_allow_html=False)
         
         # Add a log of the user's message
         st.session_state.actions.append(f"User said: {prompt}")
         
         # Generate response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                # Create workflow using the chat engine with history context
-                chat_workflow = create_chat_engine(
-                    st.session_state.menu, 
-                    st.session_state.messages[:-1]  # exclude the most recent message
-                )
-                
-                # Process the message through the workflow
-                logger.info(f"Processing user message: {prompt[:30]}...")
-                
-                # Start timing the full processing
-                full_processing_start = time.time()
-                
-                # Run the workflow processing
-                response = asyncio.run(process_message(chat_workflow, prompt))
-                
-                # Calculate total end-to-end processing time
-                full_processing_time = time.time() - full_processing_start
-                logger.info(f"====== TOTAL END-TO-END PROCESSING TIME: {full_processing_time:.2f}s ======")
-                
-                logger.info(f"Response received: {response}")
-                
-                # Handle the response
-                if response is None:
-                    error_message = "Sorry, I couldn't process your request right now. Please try again later."
-                    st.write(error_message)
-                    # Add error message to chat history
-                    st.session_state.messages.append({"role": "assistant", "content": error_message})
-                    # Store the response time for the error message
-                    st.session_state.response_times[len(st.session_state.messages) - 1] = full_processing_time
-                    st.session_state.actions.append("Action: error")
-                else:
-                    try:
-                        # Display the response if we have a valid response object
-                        logger.info(f"Displaying response: {response.response[:50]}...")
-                        st.write(response.response)
-                        
-                        # Log the workflow actions
-                        if hasattr(response, 'action_type'):
-                            action_type = response.action_type
-                            logger.info(f"Action type: {action_type}")
-                            st.session_state.actions.append(f"Action: {action_type}")
-                        
-                        # Add assistant message to chat history
-                        st.session_state.messages.append({"role": "assistant", "content": response.response})
-                        # Store the response time for this message
-                        st.session_state.response_times[len(st.session_state.messages) - 1] = full_processing_time
-                    except Exception as e:
-                        # Handle any issues accessing response attributes
-                        logger.error(f"Error displaying response: {e}")
-                        error_message = "Sorry, there was a problem displaying the response."
-                        st.write(error_message)
-                        st.session_state.messages.append({"role": "assistant", "content": error_message})
-                        # Store the response time for the error message
-                        st.session_state.response_times[len(st.session_state.messages) - 1] = full_processing_time
-                        st.session_state.actions.append("Action: error")
+        chat_message_placeholder = st.chat_message("assistant")
         
-        # Auto-scroll to bottom
-        st.rerun()
+        # Create workflow using the chat engine with history context
+        chat_workflow = create_chat_engine(
+            st.session_state.menu, 
+            st.session_state.messages[:-1]  # exclude the most recent user message
+        )
+        
+        # Process the message through the workflow
+        logger.info(f"Processing user message: {prompt[:30]}...")
+        
+        # Start timing the full processing
+        full_processing_start = time.time()
+        
+        # Run the workflow processing
+        response = asyncio.run(process_message(chat_workflow, prompt))
+        
+        # Calculate total end-to-end processing time (Stage 1)
+        full_processing_time = time.time() - full_processing_start
+        logger.info(f"====== TOTAL END-TO-END PROCESSING TIME (Stage 1): {full_processing_time:.2f}s ======")
+        
+        logger.info(f"Response received: {response}")
+        
+        # Handle the response
+        final_response_displayed = False # Flag to track if a response was displayed
+        try:
+            if response is None:
+                error_message = "Sorry, I couldn't process your request right now. Please try again later."
+                with chat_message_placeholder:
+                     st.markdown(error_message, unsafe_allow_html=False)
+                # Add error message to chat history
+                st.session_state.messages.append({"role": "assistant", "content": error_message})
+                # Store the response time for the error message
+                st.session_state.response_times[len(st.session_state.messages) - 1] = full_processing_time
+                st.session_state.actions.append("Action: error")
+                final_response_displayed = True
+            else:
+                # Get the initial response (could be ack or final)
+                display_text = response.response
+                logger.info(f"Initial response (first 50 chars): {display_text[:50]}...")
+                
+                # Check if display_text is empty or just a fragment
+                if not display_text or display_text.strip() in ['{', '}', '[]', '[', ']', '{}']:
+                    display_text = "I'm sorry, I didn't generate a proper response. Please try again."
+                    logger.warning(f"Found empty or invalid fragment: {display_text}")
+                
+                # Display the initial response in the first placeholder
+                with chat_message_placeholder:
+                     st.markdown(f"{display_text}", unsafe_allow_html=False)
+                final_response_displayed = True # At least the first part displayed
+                
+                # Log the initial workflow action
+                action_type = "unknown" # Default action type
+                if hasattr(response, 'action_type'):
+                    action_type = response.action_type
+                    logger.info(f"Initial Action type: {action_type}")
+                    # Log the initial action (might be pending)
+                    st.session_state.actions.append(f"Action: {action_type}") 
+                
+                # Add initial assistant message to chat history
+                st.session_state.messages.append({"role": "assistant", "content": display_text})
+                # Store the response time for this message
+                st.session_state.response_times[len(st.session_state.messages) - 1] = full_processing_time
+                
+                # --- Stage 2: Handle Pending Actions --- 
+                if action_type in ["menu_inquiry_pending", "order_action_pending"]:
+                    logger.info(f"Handling pending action: {action_type}")
+                    # Use a placeholder for the second message + spinner
+                    stage2_placeholder = st.chat_message("assistant")
+                    with stage2_placeholder:
+                        with st.spinner("Getting details..."): 
+                            stage2_start_time = time.time()
+                            detailed_response = ""
+                            final_action_type = "error"
+                            
+                            try:
+                                original_prompt = prompt # Use the initial user prompt for handlers
+                                if action_type == "menu_inquiry_pending":
+                                    detailed_response = asyncio.run(chat_workflow._handle_menu_query(original_prompt))
+                                    final_action_type = "menu_inquiry"
+                                elif action_type == "order_action_pending":
+                                    detailed_response = asyncio.run(chat_workflow._handle_order_query(original_prompt))
+                                    final_action_type = "order_action"
+                                    
+                                # Clean the detailed response (similar to initial response handling)
+                                if isinstance(detailed_response, str) and \
+                                   (detailed_response.strip().startswith('{') and detailed_response.strip().endswith('}')):
+                                    try:
+                                        json_data = json.loads(detailed_response)
+                                        if isinstance(json_data, dict) and 'response' in json_data:
+                                            detailed_response = json_data['response']
+                                    except json.JSONDecodeError:
+                                        pass # Use as is if not valid JSON
+                                        
+                                stage2_time = time.time() - stage2_start_time
+                                logger.info(f"Stage 2 processing time: {stage2_time:.2f}s")
+
+                            except Exception as e:
+                                logger.error(f"Error in stage 2 handling ({action_type}): {e}")
+                                detailed_response = "Sorry, I encountered an error while getting the details." # Set error msg
+                                final_action_type = "error"
+
+                        # Display the detailed response (or error) in the second placeholder
+                        st.markdown(detailed_response, unsafe_allow_html=False)
+                        
+                        # Append the second message to history
+                        st.session_state.messages.append({"role": "assistant", "content": detailed_response})
+                        # Add the final action type to the log
+                        st.session_state.actions.append(f"Action: {final_action_type}")
+                        # Store the processing time for the second message using its index
+                        st.session_state.response_times[len(st.session_state.messages) - 1] = stage2_time
+
+                    # Rerun at the end to update the full chat display and sidebar
+                    st.rerun()
+                # --- End Stage 2 --- 
+                        
+        except Exception as e:
+            # Handle any issues accessing response attributes or other errors during display
+            logger.error(f"Error processing/displaying response: {e}")
+            # If no response was displayed yet, display error in the initial placeholder
+            if not final_response_displayed:
+                error_message = "Sorry, there was a problem displaying the response."
+                with chat_message_placeholder:
+                    st.markdown(error_message, unsafe_allow_html=False)
+                st.session_state.messages.append({"role": "assistant", "content": error_message})
+                st.session_state.actions.append("Action: error")
+        
+        # Auto-scroll to bottom if not handling stage 2 which does its own rerun
+        if not (response and hasattr(response, 'action_type') and response.action_type in ["menu_inquiry_pending", "order_action_pending"]):
+             st.rerun()
 
 if __name__ == "__main__":
     main() 
