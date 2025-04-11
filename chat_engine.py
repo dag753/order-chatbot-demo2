@@ -916,8 +916,10 @@ class FoodOrderingWorkflow(Workflow):
         **Instructions:**
         1. If the cart is empty, tell them they need to add items first.
         2. If there are items in the cart and the user is finishing their order without explicitly confirming it: 
-           - Summarize the items and **calculate the total price** based on the `price` and `quantity` of each item in the provided `cart` list.
-           - Ask for confirmation.
+           - Start the response with "Your order:\n".
+           - List EACH item from the `cart` on a **separate new line**, starting with a hyphen (`- `). Include quantity, name, any options (concisely), and the item's calculated price (quantity * unit price).
+           - After the list, add a new line with the **total price** (sum of all item prices) formatted as "Total: $[calculated total price]".
+           - Finally, add a new line asking for confirmation: "Would you like to confirm this order?".
            - Set status to "PENDING CONFIRMATION".
         3. If the user is explicitly confirming a previous confirmation request, thank them, set status to "CONFIRMED".
         
@@ -930,7 +932,7 @@ class FoodOrderingWorkflow(Workflow):
         
         FORMAT (items in cart, user is finishing order but hasn't confirmed):
         {{
-          "response": "Your order contains [summary of items]. Total: $[calculated total price]. Would you like to confirm this order?",
+          "response": "Your order:\\n- [Qty] [Item Name] (Options): $[Item Total Price]\\n- [Qty] [Item Name] (Options): $[Item Total Price]\\nTotal: $[Calculated Grand Total Price]\\nWould you like to confirm this order?\",
           "cart": [existing cart items],
           "cart_status": "PENDING CONFIRMATION"
         }}
@@ -944,7 +946,7 @@ class FoodOrderingWorkflow(Workflow):
         
         Based on the cart contents and user message, provide the appropriate response. Ensure the total price is calculated correctly.
         IMPORTANT: Each cart item MUST be a dictionary with "item", "quantity", "price", and "options" fields. The "options" field must be a list.
-        Example of a valid cart item: {{"item": "Burger", "quantity": 1, "price": 8.99, "options": ["extra cheese"]}}
+        Example of a valid cart item: {{\"item\": \"Burger\", \"quantity\": 1, \"price\": 8.99, \"options\": [\"extra cheese\"]}}
         """
         
         # Generate response
