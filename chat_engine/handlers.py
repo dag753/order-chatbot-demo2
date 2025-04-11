@@ -16,7 +16,7 @@ def _extract_token_counts(response: Any, handler_name: str) -> Tuple[Optional[in
     completion_tokens = None
     try:
         if hasattr(response, 'additional_kwargs') and isinstance(response.additional_kwargs, dict):
-            kwargs_dict = response.additional_kwargs # Get the dictionary directly
+            kwargs_dict = response.additional_kwargs
             if 'prompt_tokens' in kwargs_dict:
                 p_tokens = kwargs_dict['prompt_tokens']
                 if isinstance(p_tokens, str) and p_tokens.isdigit():
@@ -33,8 +33,8 @@ def _extract_token_counts(response: Any, handler_name: str) -> Tuple[Optional[in
             logger.debug(f"Token Extraction ({handler_name}): No valid additional_kwargs found.")
     except Exception as token_err:
         logger.error(f"Error extracting token counts for {handler_name}: {token_err}")
-        prompt_tokens = None # Ensure reset on error
-        completion_tokens = None # Ensure reset on error
+        prompt_tokens = None
+        completion_tokens = None
     return prompt_tokens, completion_tokens
 
 # --- Formatting Handler ---
@@ -51,7 +51,6 @@ async def format_response_text(text: str) -> str:
         logger.info("Formatting text (input was empty/whitespace): Returning empty string.")
         return ""
 
-    # Corrected f-string format and double backslashes
     format_prompt = f"""
     You are a text formatting assistant. Your task is to take the input text, clean it up, and format it for display in a simple text-based chat interface (like SMS).
 
@@ -106,19 +105,14 @@ async def format_response_text(text: str) -> str:
         formatted_text = response.text.strip()
         logger.info(f"Formatting text (output): {formatted_text[:100]}...")
 
-        # Basic validation
         if not formatted_text and text and not text.isspace():
             logger.warning("Formatter LLM returned empty string unexpectedly. Falling back to original text.")
-            return text # Fallback
-
-        # We don't need to track/return tokens for the formatter specifically for now
-        # _, _ = _extract_token_counts(response, "formatter")
-        # logger.debug(f"Formatter Tokens: p={p_tokens}, c={c_tokens}")
+            return text
 
         return formatted_text
     except Exception as e:
         logger.error(f"Error during text formatting LLM call: {type(e).__name__}: {str(e)}. Returning original text.")
-        return text # Fallback
+        return text
 
 # --- Intent-Specific Handlers ---
 
@@ -128,7 +122,6 @@ async def handle_menu_query(
     menu_text: str
 ) -> Tuple[str, Optional[int], Optional[int]]:
     """Handle menu-related queries. Returns (response_text, prompt_tokens, completion_tokens)."""
-    # Corrected f-string format
     menu_template = f"""
     You are a helpful restaurant assistant providing information about menu items and guiding users towards placing an order.
     **Use the provided conversation history to understand the context and avoid repeating information unnecessarily.**
@@ -191,7 +184,6 @@ async def handle_order_query(
     menu_text: str
 ) -> Tuple[str, List[Dict[str, Any]], Optional[int], Optional[int]]:
     """Handle order-related actions. Returns (response_text, cart_items, prompt_tokens, completion_tokens)."""
-    # Corrected f-string format and double backslashes
     order_template = f"""
     You are an assistant helping with food orders and guiding the user towards completing their purchase.
     **Use the provided conversation history to understand the current order status and context.**
@@ -291,11 +283,9 @@ async def handle_order_query(
 
         response_content = response.message.content
 
-        # Parse response to extract cart information
         try:
             if isinstance(response_content, str):
                 import re
-                # Corrected regex for JSON extraction
                 json_matches = re.findall(r'(\{(?:[^{}]|(?:\{[^{}]*\}))*\})', response_content, re.DOTALL)
                 if json_matches:
                     for json_str in json_matches:
@@ -306,7 +296,7 @@ async def handle_order_query(
                                 if "cart" in data and isinstance(data["cart"], list):
                                     cart_items = data["cart"]
                                     logger.info(f"Extracted cart items: {len(cart_items)} items")
-                                break # Found valid JSON
+                                break
                         except json.JSONDecodeError:
                             continue
                 else:
@@ -356,13 +346,11 @@ async def handle_order_confirmation(
     chat_history: List[ChatMessage]
 ) -> Tuple[str, List[Dict[str, Any]], Optional[str], Optional[int], Optional[int]]:
     """Handle order confirmation. Returns (response_text, cart_items, cart_status, prompt_tokens, completion_tokens)."""
-    # Extract cart from history as a starting point
     extracted_cart_items = []
     try:
         for msg in reversed(chat_history):
             if hasattr(msg, 'content') and isinstance(msg.content, str):
                 import re
-                # Corrected regex for JSON extraction
                 json_matches = re.findall(r'(\{(?:[^{}]|(?:\{[^{}]*\}))*\})', msg.content, re.DOTALL)
                 for json_str in json_matches:
                     try:
@@ -372,12 +360,11 @@ async def handle_order_confirmation(
                             break
                     except json.JSONDecodeError:
                         continue
-            if extracted_cart_items: break # Found cart
+            if extracted_cart_items: break
     except Exception as e:
         logger.error(f"Error extracting cart from history for confirmation: {str(e)}")
         extracted_cart_items = []
 
-    # Validate extracted cart items
     validated_cart_items = []
     for item in extracted_cart_items:
         if isinstance(item, dict):
@@ -388,9 +375,8 @@ async def handle_order_confirmation(
             validated_cart_items.append(item)
         else:
             logger.warning(f"Skipping invalid cart item during confirmation init: {item}")
-    initial_cart_items = validated_cart_items # Use this as the context for the prompt
+    initial_cart_items = validated_cart_items
 
-    # Corrected f-string format and double backslashes
     confirmation_template = f"""
     You are a helpful restaurant assistant confirming an order.
 
@@ -446,8 +432,8 @@ async def handle_order_confirmation(
     llm = OpenAI(model="gpt-4o", temperature=0.0, request_timeout=30)
     prompt_tokens, completion_tokens = None, None
     response_content = ""
-    final_cart_items = initial_cart_items.copy() # Start with initial, LLM will overwrite if needed
-    cart_status = "OPEN" # Default
+    final_cart_items = initial_cart_items.copy()
+    cart_status = "OPEN"
 
     try:
         start_time = time.time()
@@ -458,11 +444,9 @@ async def handle_order_confirmation(
 
         response_content = response.message.content
 
-        # Parse response to extract cart and status information
         try:
             if isinstance(response_content, str):
                 import re
-                # Corrected regex for JSON extraction
                 json_matches = re.findall(r'(\{(?:[^{}]|(?:\{[^{}]*\}))*\})', response_content, re.DOTALL)
                 if json_matches:
                     for json_str in json_matches:
@@ -472,7 +456,6 @@ async def handle_order_confirmation(
                                 response_content = data.get("response", "")
                                 if "cart" in data and isinstance(data["cart"], list):
                                     extracted_cart = data["cart"]
-                                    # Validate extracted items
                                     validated_extracted_cart = []
                                     for item in extracted_cart:
                                         if isinstance(item, dict):
@@ -483,12 +466,12 @@ async def handle_order_confirmation(
                                             validated_extracted_cart.append(item)
                                         else:
                                             logger.warning(f"Skipping invalid extracted cart item in confirmation: {item}")
-                                    final_cart_items = validated_extracted_cart # Update final cart
+                                    final_cart_items = validated_extracted_cart
                                     logger.info(f"Extracted cart items in confirmation: {len(final_cart_items)} items")
                                 if "cart_status" in data and isinstance(data["cart_status"], str):
                                     cart_status = data["cart_status"]
                                     logger.info(f"Extracted cart status: {cart_status}")
-                                break # Found valid JSON
+                                break
                         except json.JSONDecodeError:
                             continue
                 else:

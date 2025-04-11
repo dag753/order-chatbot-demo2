@@ -10,18 +10,17 @@ from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.core.base.llms.types import MessageRole, ChatMessage
 
-from utils import menu_to_string # Assuming utils is in the parent directory or PYTHONPATH
-from .events import ResponseEvent, ChatResponseStopEvent # Relative import
+from utils import menu_to_string
+from .events import ResponseEvent, ChatResponseStopEvent
 from .handlers import (
     format_response_text,
     handle_menu_query,
     handle_order_query,
     handle_order_confirmation,
     handle_end_conversation,
-    _extract_token_counts # Import helper if needed, or keep private in handlers
+    _extract_token_counts
 )
 
-# Set up logger
 logger = logging.getLogger("food_ordering_bot.workflow")
 
 class FoodOrderingWorkflow(Workflow):
@@ -32,8 +31,6 @@ class FoodOrderingWorkflow(Workflow):
     start_event_cls: ClassVar[Type[Event]] = StartEvent
 
     def __init__(self, menu: Dict[str, Dict[str, Any]], chat_history: List[ChatMessage] = None, timeout: float = 60.0):
-        # Configure LLM settings (can be done globally or here)
-        # Note: Settings might be better managed outside the workflow instance
         if not Settings.llm:
             Settings.llm = OpenAI(model="gpt-4o", request_timeout=30)
         if not Settings.embed_model:
@@ -43,9 +40,6 @@ class FoodOrderingWorkflow(Workflow):
         self.menu = menu
         self.chat_history = chat_history or []
         self.menu_text = menu_to_string(menu)
-        # Token tracking is no longer needed within the workflow instance
-        # self.last_prompt_tokens = None
-        # self.last_completion_tokens = None
         logger.info(f"FoodOrderingWorkflow initialized with timeout={timeout}")
 
     @step
@@ -63,7 +57,7 @@ class FoodOrderingWorkflow(Workflow):
             for msg in self.chat_history
         ]) if self.chat_history else "No conversation history yet."
 
-        # --- Intent Classification LLM Call --- (Same prompt as before)
+        # --- Intent Classification LLM Call ---
         router_prompt = f"""
         You are a restaurant chatbot assistant classifying user intent.
 
@@ -141,13 +135,12 @@ class FoodOrderingWorkflow(Workflow):
         router_response = await llm.acomplete(router_prompt)
         elapsed = time.time() - start_time
 
-        # Extract tokens from this specific call
         prompt_tokens, completion_tokens = _extract_token_counts(router_response, "classify_intent")
 
         response_text = router_response.text.strip()
         logger.info(f"Router response (took {elapsed:.2f}s, p={prompt_tokens}, c={completion_tokens}): {response_text}")
 
-        # --- Parse Intent and Response --- (Same parsing logic as before)
+        # --- Parse Intent and Response ---
         intent = ""
         direct_response = ""
         try:
@@ -188,13 +181,13 @@ class FoodOrderingWorkflow(Workflow):
             elif any(kw in raw_text_lower for kw in ["history", "what did i ask", "previous message"]): intent = "history"
             elif any(farewell in raw_text_lower for farewell in ["bye", "thank you", "thanks"]): intent = "end"
             else: intent = "irrelevant"
-            if intent != "greeting" and not direct_response: # Provide default if fallback didn't set one
+            if intent != "greeting" and not direct_response:
                 direct_response = "I'm sorry, I had trouble understanding that. I can only assist with menu questions and food orders."
             logger.info(f"Fallback intent detection: '{intent}'")
 
         logger.info(f"Intent classified as: '{intent}' (took {elapsed:.2f}s)")
 
-        # --- Decide Next Step --- 
+        # --- Decide Next Step ---
         response = ""
         action_type = ""
         result = None
@@ -207,7 +200,7 @@ class FoodOrderingWorkflow(Workflow):
                 result = ResponseEvent(
                     response=response,
                     action_type=action_type,
-                    original_query=query, # Pass query for next step
+                    original_query=query,
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens
                 )
@@ -238,7 +231,7 @@ class FoodOrderingWorkflow(Workflow):
                 )
             elif intent == "greeting":
                 logger.info("Handling greeting directly")
-                response = await format_response_text(direct_response) # Format the direct response
+                response = await format_response_text(direct_response)
                 action_type = "greeting"
                 result = ChatResponseStopEvent(
                     result=None, response=response, action_type=action_type,
@@ -246,17 +239,16 @@ class FoodOrderingWorkflow(Workflow):
                 )
             elif intent == "end":
                 logger.info("Handling end conversation")
-                # Call handler, which returns (text, p_tokens, c_tokens)
                 end_response_text, end_p_tokens, end_c_tokens = await handle_end_conversation(query, self.chat_history)
-                response = await format_response_text(end_response_text) # Format it
+                response = await format_response_text(end_response_text)
                 action_type = "end_conversation"
                 result = ChatResponseStopEvent(
                     result=None, response=response, action_type=action_type,
-                    prompt_tokens=end_p_tokens, completion_tokens=end_c_tokens # Use tokens from handler
+                    prompt_tokens=end_p_tokens, completion_tokens=end_c_tokens
                 )
             elif intent == "history":
                 logger.info("Handling history query directly")
-                response = await format_response_text(direct_response) # Format the direct response
+                response = await format_response_text(direct_response)
                 action_type = "history_query"
                 result = ChatResponseStopEvent(
                     result=None, response=response, action_type=action_type,
@@ -264,13 +256,13 @@ class FoodOrderingWorkflow(Workflow):
                  )
             elif intent == "irrelevant":
                  logger.info("Handling irrelevant query directly")
-                 response = await format_response_text(direct_response) # Format the direct response
+                 response = await format_response_text(direct_response)
                  action_type = "irrelevant_query"
                  result = ChatResponseStopEvent(
                     result=None, response=response, action_type=action_type,
                     prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
                  )
-            else: # Should not happen
+            else:
                 logger.error(f"Reached unexpected else block for intent: {intent}")
                 response = "I'm sorry, I'm not sure how to handle that. I can assist with menu questions and orders."
                 action_type = "error"
@@ -299,24 +291,22 @@ class FoodOrderingWorkflow(Workflow):
         """
         logger.info(f"Entering generate_detailed_response with action_type: {ev.action_type}")
 
-        # Initialize vars for this step
-        response_text = ev.response # Default to incoming response
+        response_text = ev.response
         final_action_type = ev.action_type
         cart_items = ev.cart_items
         cart_status = ev.cart_status
-        prompt_tokens = ev.prompt_tokens # Carry over from previous step initially
-        completion_tokens = ev.completion_tokens # Carry over from previous step initially
+        prompt_tokens = ev.prompt_tokens
+        completion_tokens = ev.completion_tokens
 
         if ev.action_type == "menu_inquiry_pending":
             logger.info("Handling pending menu inquiry via external handler")
             if ev.original_query:
-                # Call handler, get (text, p_tokens, c_tokens)
                 response_text, p_tokens, c_tokens = await handle_menu_query(ev.original_query, self.chat_history, self.menu_text)
                 formatted_response = await format_response_text(response_text)
-                prompt_tokens, completion_tokens = p_tokens, c_tokens # Update tokens
+                prompt_tokens, completion_tokens = p_tokens, c_tokens
                 final_action_type = "menu_inquiry"
                 logger.info(f"Generated detailed menu response: {formatted_response[:50]}...")
-                response_text = formatted_response # Use formatted response
+                response_text = formatted_response
             else:
                 logger.error("Original query missing for menu_inquiry_pending")
                 response_text = "Error: Missing query for menu info."
@@ -325,14 +315,13 @@ class FoodOrderingWorkflow(Workflow):
         elif ev.action_type == "order_action_pending":
             logger.info("Handling pending order action via external handler")
             if ev.original_query:
-                # Call handler, get (text, cart, p_tokens, c_tokens)
                 response_text, cart, p_tokens, c_tokens = await handle_order_query(ev.original_query, self.chat_history, self.menu_text)
                 formatted_response = await format_response_text(response_text)
-                cart_items = cart # Update cart
-                prompt_tokens, completion_tokens = p_tokens, c_tokens # Update tokens
+                cart_items = cart
+                prompt_tokens, completion_tokens = p_tokens, c_tokens
                 final_action_type = "order_action"
                 logger.info(f"Generated detailed order response: {formatted_response[:50]}...")
-                response_text = formatted_response # Use formatted response
+                response_text = formatted_response
             else:
                 logger.error("Original query missing for order_action_pending")
                 response_text = "Error: Missing query for order action."
@@ -341,24 +330,21 @@ class FoodOrderingWorkflow(Workflow):
         elif ev.action_type == "order_confirmation_pending":
             logger.info("Handling pending order confirmation via external handler")
             if ev.original_query:
-                # Call handler, get (text, cart, status, p_tokens, c_tokens)
                 response_text, cart, status, p_tokens, c_tokens = await handle_order_confirmation(ev.original_query, self.chat_history)
                 formatted_response = await format_response_text(response_text)
-                cart_items = cart # Update cart
-                cart_status = status # Update status
-                prompt_tokens, completion_tokens = p_tokens, c_tokens # Update tokens
+                cart_items = cart
+                cart_status = status
+                prompt_tokens, completion_tokens = p_tokens, c_tokens
                 final_action_type = "order_confirmation"
                 logger.info(f"Generated order confirmation response: {formatted_response[:50]}...")
-                response_text = formatted_response # Use formatted response
+                response_text = formatted_response
             else:
                 logger.error("Original query missing for order_confirmation_pending")
                 response_text = "Error: Missing query for order confirmation."
                 final_action_type = "error"
 
         elif ev.action_type in ["greeting", "end_conversation", "history_query", "irrelevant_query", "error"]:
-            # Action type is already final, pass through
             logger.info(f"Passing through response with final action_type: {ev.action_type}")
-            # Use the response and tokens already in the event (ev)
             response_text = ev.response
             final_action_type = ev.action_type
             cart_items = ev.cart_items
@@ -366,7 +352,6 @@ class FoodOrderingWorkflow(Workflow):
             prompt_tokens = ev.prompt_tokens
             completion_tokens = ev.completion_tokens
         else:
-            # This case should ideally not be reached if classify_and_respond is correct
             logger.warning(f"generate_detailed_response received unexpected action type: {ev.action_type}. Passing through.")
             response_text = ev.response
             final_action_type = ev.action_type
@@ -375,7 +360,6 @@ class FoodOrderingWorkflow(Workflow):
             prompt_tokens = ev.prompt_tokens
             completion_tokens = ev.completion_tokens
 
-        # Return a new ResponseEvent with the final details
         return ResponseEvent(
             response=response_text,
             action_type=final_action_type,
@@ -394,14 +378,13 @@ class FoodOrderingWorkflow(Workflow):
         """
         logger.info(f"Finalizing response: {ev.response[:30]}...")
 
-        # Tokens are already correctly populated in the incoming ResponseEvent (ev)
         prompt_tokens = ev.prompt_tokens
         completion_tokens = ev.completion_tokens
 
         logger.info(f"Finalize using token values: prompt_tokens={prompt_tokens}, completion_tokens={completion_tokens}")
 
         result = ChatResponseStopEvent(
-            result=None, # Required by StopEvent
+            result=None,
             response=ev.response,
             action_type=ev.action_type,
             cart_items=ev.cart_items,
