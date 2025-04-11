@@ -7,7 +7,7 @@ import time
 import json
 from dotenv import load_dotenv
 from llama_index.core.workflow import StartEvent, StopEvent
-from chat_engine import create_chat_engine, ChatResponseStopEvent
+from chat_engine import create_chat_engine, ChatResponseStopEvent, FoodOrderingWorkflow
 from utils import initialize_session_state
 from ui_components import render_sidebar, display_chat_messages # Remove display_cart import
 import re # Import regex module
@@ -25,19 +25,7 @@ logger.setLevel(logging.INFO) # Use INFO for less noise, DEBUG is very verbose
 load_dotenv()
 
 # --- Helper function for cleaning response text ---
-def clean_response_text(text: str) -> str:
-    """Cleans LLM response text to avoid markdown rendering issues."""
-    if not isinstance(text, str):
-        return str(text) # Return string representation if not a string
-    # Normalize whitespace (including newlines, tabs etc.)
-    cleaned_text = ' '.join(text.split())
-    # Remove potentially problematic characters except common punctuation and markdown (*)
-    # Allows letters, numbers, spaces, ., ,, !, ?, $, :, (, ), -, +, *, /, \n, \
-    cleaned_text = re.sub(r'[^a-zA-Z0-9\s.,!?$:()\-\+\*\\/\\\\]', '', cleaned_text)
-    # Ensure markdown bolding has space around it or is at start/end
-    cleaned_text = re.sub(r'(?<!\s)(\*\*)', r' \1', cleaned_text) # Space before ** if not preceded by space
-    cleaned_text = re.sub(r'(\*\*)(?!\s)', r'\1 ', cleaned_text) # Space after ** if not followed by space
-    return cleaned_text.strip()
+# This function is no longer used and will be removed.
 
 async def process_message(workflow, user_query):
     """Process a message through the workflow and return the response"""
@@ -171,27 +159,39 @@ async def handle_chat_submission(prompt: str):
                 logger.warning(f"Found empty response: {response_event.response}")
                 action_type = "error" # Treat as error
             else:
-                # Clean up response using the helper function
-                initial_message_content = clean_response_text(initial_message_content)
-                # Check for problematic fragments after cleaning
+                # Check for problematic fragments after cleaning (or lack thereof)
                 if not initial_message_content or initial_message_content.strip() in ['{', '}', '[]', '[', ']', '{}']:
                     initial_message_content = "I'm sorry, I didn't generate a proper initial response. Please try again."
-                    logger.warning(f"Found invalid fragment after cleaning: {response_event.response}")
+                    logger.warning(f"Found invalid fragment before/without cleaning: {response_event.response}")
                     action_type = "error"
+                # Apply basic text cleaning in case formatting wasn't done upstream
+                elif isinstance(initial_message_content, str):
+                    pass # Cleaning is likely interfering with intended LLM markdown formatting
         
         # Display initial message (or error) in the first placeholder
         with chat_message_placeholder:
              st.markdown(initial_message_content, unsafe_allow_html=False)
              # Only show time if it's positive
              if stage1_time > 0:
-                 st.caption(f"*Response time: {stage1_time:.2f}s*")
+                 # Include token counts if available
+                 prompt_tokens = getattr(response_event, 'prompt_tokens', None)
+                 completion_tokens = getattr(response_event, 'completion_tokens', None)
+                 token_info = ""
+                 if prompt_tokens is not None and completion_tokens is not None:
+                     token_info = f", prompt: {prompt_tokens}, completion: {completion_tokens}"
+                 st.caption(f"*Response time: {stage1_time:.2f}s{token_info}*")
 
         # Add this first message to history AFTER displaying it
         st.session_state.messages.append({"role": "assistant", "content": initial_message_content})
         # Add action to log
         st.session_state.actions.append(f"Action: {action_type}")
         # Store response time mapping (using index of the message just added)
-        st.session_state.response_times[len(st.session_state.messages) - 1] = stage1_time
+        message_index = len(st.session_state.messages) - 1
+        st.session_state.response_times[message_index] = {
+            "time": stage1_time,
+            "prompt_tokens": getattr(response_event, 'prompt_tokens', None),
+            "completion_tokens": getattr(response_event, 'completion_tokens', None)
+        }
         initial_response_handled = True # Mark that *something* was shown
         
         # Update cart state if cart items were returned (even if empty - empty cart is valid)
@@ -237,36 +237,57 @@ async def handle_chat_submission(prompt: str):
                 try:
                     # Call the appropriate handler directly
                     original_prompt = prompt # Use the user's original prompt
-                    if action_type == "menu_inquiry_pending":
-                        detailed_response_content = await chat_workflow._handle_menu_query(original_prompt) # Changed to await
-                        final_action_type = "menu_inquiry"
-                    elif action_type == "order_action_pending":
-                        detailed_response_content, stage2_cart_items = await chat_workflow._handle_order_query(original_prompt) # Changed to await
-                        final_action_type = "order_action"
-                        # Update cart state if cart items were returned
-                        if stage2_cart_items is not None:
-                            st.session_state.current_cart = stage2_cart_items
-                            if not stage2_cart_items:
-                                st.session_state.actions.append("Cart: Order canceled/emptied")
-                            else:
-                                st.session_state.actions.append(f"Cart: Updated with {len(stage2_cart_items)} items")
-                    elif action_type == "order_confirmation_pending":
-                        detailed_response_content, stage2_cart_items, stage2_cart_status = await chat_workflow._handle_order_confirmation(original_prompt)
-                        final_action_type = "order_confirmation"
-                        # Update cart state if cart items were returned
-                        if stage2_cart_items is not None:
-                            st.session_state.current_cart = stage2_cart_items
-                            if not stage2_cart_items:
-                                st.session_state.actions.append("Cart: Order canceled/emptied")
-                            else:
-                                st.session_state.actions.append(f"Cart: Updated with {len(stage2_cart_items)} items")
-                                
-                        # Update cart status if provided
-                        if stage2_cart_status is not None:
-                            st.session_state.cart_status = stage2_cart_status
-                            st.session_state.actions.append(f"Cart Status: Changed to {stage2_cart_status}")
+                    stage2_prompt_tokens = None
+                    stage2_completion_tokens = None
+                    
+                    # We need access to the workflow instance to call handlers
+                    # This assumes chat_workflow is still in scope from Stage 1
+                    if not isinstance(chat_workflow, FoodOrderingWorkflow):
+                        logger.error("Workflow instance not available or invalid type for Stage 2")
+                        detailed_response_content = "Error: Workflow not available for stage 2 processing."
+                        final_action_type = "error"
+                    else:
+                        if action_type == "menu_inquiry_pending":
+                            # Call the handler function directly (now outside the workflow class)
+                            # Need to import handlers or access workflow methods if refactored differently
+                            from chat_engine.handlers import handle_menu_query
+                            detailed_response_content, stage2_prompt_tokens, stage2_completion_tokens = await handle_menu_query(
+                                original_prompt, chat_workflow.chat_history, chat_workflow.menu_text
+                            )
+                            final_action_type = "menu_inquiry"
+                        elif action_type == "order_action_pending":
+                            from chat_engine.handlers import handle_order_query
+                            detailed_response_content, stage2_cart_items, stage2_prompt_tokens, stage2_completion_tokens = await handle_order_query(
+                                original_prompt, chat_workflow.chat_history, chat_workflow.menu_text
+                            )
+                            final_action_type = "order_action"
+                            # Update cart state if cart items were returned
+                            if stage2_cart_items is not None:
+                                st.session_state.current_cart = stage2_cart_items
+                                if not stage2_cart_items:
+                                    st.session_state.actions.append("Cart: Order canceled/emptied")
+                                else:
+                                    st.session_state.actions.append(f"Cart: Updated with {len(stage2_cart_items)} items")
+                        elif action_type == "order_confirmation_pending":
+                            from chat_engine.handlers import handle_order_confirmation
+                            detailed_response_content, stage2_cart_items, stage2_cart_status, stage2_prompt_tokens, stage2_completion_tokens = await handle_order_confirmation(
+                                original_prompt, chat_workflow.chat_history
+                            )
+                            final_action_type = "order_confirmation"
+                            # Update cart state if cart items were returned
+                            if stage2_cart_items is not None:
+                                st.session_state.current_cart = stage2_cart_items
+                                if not stage2_cart_items:
+                                    st.session_state.actions.append("Cart: Order canceled/emptied")
+                                else:
+                                    st.session_state.actions.append(f"Cart: Updated with {len(stage2_cart_items)} items")
 
-                    # Basic validation/cleaning
+                            # Update cart status if provided
+                            if stage2_cart_status is not None:
+                                st.session_state.cart_status = stage2_cart_status
+                                st.session_state.actions.append(f"Cart Status: Changed to {stage2_cart_status}")
+
+                    # Basic validation/cleaning (moved outside specific handlers)
                     if isinstance(detailed_response_content, str) and \
                        (detailed_response_content.strip().startswith('{') and detailed_response_content.strip().endswith('}')):
                         try:
@@ -280,37 +301,56 @@ async def handle_chat_submission(prompt: str):
                          detailed_response_content = "I'm sorry, I didn't receive valid details."
                          final_action_type = "error"
                          logger.warning("Received empty/invalid details in stage 2.")
+                         stage2_prompt_tokens, stage2_completion_tokens = None, None # Reset tokens on error
+
+                    # Format the response text using the LLM formatter (call handler)
+                    try:
+                        logger.info("Formatting Stage 2 response text with LLM...")
+                        from chat_engine.handlers import format_response_text
+                        detailed_response_content = await format_response_text(detailed_response_content)
+                    except Exception as format_err:
+                        logger.error(f"Error formatting Stage 2 response: {format_err}")
+                        # Continue with unformatted text
+                        pass # Formatting failure fallback
 
                 except Exception as e:
                     logger.error(f"Error in stage 2 handling ({action_type}): {e}", exc_info=True)
                     detailed_response_content = "Sorry, I encountered an error while getting the details."
                     final_action_type = "error" # Ensure it's marked as error
-
-                # --- CLEANING detailed response ---
-                if isinstance(detailed_response_content, str):
-                    # Clean using the helper function
-                    detailed_response_content = clean_response_text(detailed_response_content)
-                    # Check for problematic fragments after cleaning
-                    if not detailed_response_content or detailed_response_content.strip() in ['{', '}', '[]', '[', ']', '{}']:
-                         detailed_response_content = "I'm sorry, I didn't receive valid details."
-                         final_action_type = "error"
-                         logger.warning("Received empty/invalid details in stage 2 after cleaning.")
+                    # Ensure tokens are None if stage 2 failed
+                    stage2_prompt_tokens = None
+                    stage2_completion_tokens = None
 
                 stage2_time = time.time() - stage2_start_time
-                logger.info(f"Stage 2 processing time: {stage2_time:.2f}s")
+                logger.info(f"Stage 2 processing time: {stage2_time:.2f}s (Tokens: p={stage2_prompt_tokens}, c={stage2_completion_tokens})") # Log retrieved tokens
 
             # Display detailed response (or error) in the second placeholder AFTER spinner finishes
             st.markdown(detailed_response_content, unsafe_allow_html=False)
             # Only show time if positive
             if stage2_time > 0:
-                st.caption(f"*Processing time: {stage2_time:.2f}s*")
+                # Display tokens retrieved from the handler calls
+                token_info = ""
+                if stage2_prompt_tokens is not None and stage2_completion_tokens is not None:
+                    token_info = f", prompt: {stage2_prompt_tokens}, completion: {stage2_completion_tokens}"
+                elif stage2_prompt_tokens is not None:
+                     token_info = f", prompt: {stage2_prompt_tokens}"
+                elif stage2_completion_tokens is not None:
+                     token_info = f", completion: {stage2_completion_tokens}"
+                else:
+                     token_info = " (token data unavailable)" # Fallback if still None
+                st.caption(f"*Processing time: {stage2_time:.2f}s{token_info}*")
 
         # Append the second message to history
         st.session_state.messages.append({"role": "assistant", "content": detailed_response_content})
         # Add the final action type to the log
         st.session_state.actions.append(f"Action: {final_action_type}")
-        # Store the processing time for the second message using its index
-        st.session_state.response_times[len(st.session_state.messages) - 1] = stage2_time
+        # Store the processing time and RETRIEVED token counts for the second message
+        message_index = len(st.session_state.messages) - 1
+        st.session_state.response_times[message_index] = {
+            "time": stage2_time,
+            "prompt_tokens": stage2_prompt_tokens, # Use the retrieved value
+            "completion_tokens": stage2_completion_tokens # Use the retrieved value
+        }
 
 def main():
     st.set_page_config(
@@ -358,6 +398,8 @@ def main():
     
     # Handle submission if a prompt was entered
     if prompt:
+        # Add necessary import for FoodOrderingWorkflow check
+        # from chat_engine import FoodOrderingWorkflow
         # Run the asynchronous handling function
         asyncio.run(handle_chat_submission(prompt))
         # Rerun at the end to update the display after handling completes

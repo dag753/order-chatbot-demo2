@@ -1,6 +1,7 @@
 import streamlit as st
 from typing import List, Dict, Any
 import logging
+import re  # Add regex import for text fixing
 
 def display_cart(cart_items: List[Dict[str, Any]]):
     """Displays the shopping cart in the top right corner of the UI."""
@@ -96,6 +97,9 @@ def render_sidebar(menu: Dict[str, Dict[str, Any]], actions: List[str], cart_ite
         st.session_state.messages = []
         st.session_state.actions = []
         st.session_state.response_times = {}
+        # Also clear the cart and reset status
+        st.session_state.current_cart = []
+        st.session_state.cart_status = "OPEN"
         st.rerun()
 
     st.sidebar.divider() # Add a visual separator
@@ -171,21 +175,44 @@ def render_sidebar(menu: Dict[str, Dict[str, Any]], actions: List[str], cart_ite
         st.sidebar.write("No items in menu. Add some above!")
 
     # Chat actions/logs display - REMOVED FROM HERE
-    # st.sidebar.subheader("Chatbot Actions")
-    # if actions:
-    #     for action in reversed(actions): # Show newest first
-    #         st.sidebar.info(action)
-    # else:
-    #     st.sidebar.write("No actions yet.")
+    pass # Removed commented code block
 
 
-def display_chat_messages(messages: List[Dict[str, str]], response_times: Dict[int, float]):
+def display_chat_messages(messages: List[Dict[str, str]], response_times: Dict[int, Dict[str, Any]]):
     """Displays the chat history in the main area."""
     for i, message in enumerate(messages):
         with st.chat_message(message["role"]):
-            st.markdown(message["content"], unsafe_allow_html=False)
-            # Display response time if available for assistant messages
+            content = message["content"]
+            # Replace st.markdown with st.text to prevent markdown rendering
+            st.text(content)
+
+            # Display response time and token counts if available for assistant messages
             if message["role"] == "assistant" and i in response_times:
-                time_taken = response_times[i]
-                if time_taken > 0:
-                    st.caption(f"*Response time: {time_taken:.2f}s*") 
+                # Get response info - handle both the old format (float) and new format (dict)
+                response_info = response_times[i]
+                
+                if isinstance(response_info, float):
+                    # Handle old format (just a time value)
+                    st.caption(f"*Response time: {response_info:.2f}s*")
+                else:
+                    # Handle new format (dictionary with time and token counts)
+                    time_taken = response_info.get("time", 0)
+                    prompt_tokens = response_info.get("prompt_tokens")
+                    completion_tokens = response_info.get("completion_tokens")
+                    
+                    # Basic debugging - show raw token data for verification
+                    if time_taken > 0:
+                        caption = f"*Response time: {time_taken:.2f}s"
+                        # Add token counts if available
+                        if prompt_tokens is not None:
+                            caption += f", prompt tokens: {prompt_tokens}"
+                        if completion_tokens is not None:
+                            caption += f", completion tokens: {completion_tokens}"
+                        if prompt_tokens is None and completion_tokens is None:
+                            caption += " (token data unavailable)"
+                        caption += "*"
+                        st.caption(caption)
+                        
+                        # For debugging - show the raw response_info
+                        # token_debug = f"Debug - Raw response info: {response_info}"
+                        # st.caption(token_debug) 

@@ -20,9 +20,6 @@ def initialize_session_state():
         if not st.session_state.menu:
              st.session_state.menu = {} # Or provide a minimal default
     
-    if "current_order" not in st.session_state:
-        st.session_state.current_order = []
-        
     if "current_cart" not in st.session_state:
         st.session_state.current_cart = []
         

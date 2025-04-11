@@ -98,20 +98,59 @@
          "Fried Pickles": {
             "description": "Crispy fried pickle chips served with ranch.",
             "price": 5.49
+        },
+        "Garlic Bread": {
+            "description": "Toasted bread with garlic butter and herbs",
+            "price": 4.99,
+            "options": {
+                "Add Cheese": 1.00
+            }
+        },
+        "Caesar Salad": {
+            "description": "Romaine lettuce, croutons, parmesan cheese with Caesar dressing",
+            "price": 5.99,
+            "options": {
+                "Small": -1.00,
+                "Regular": 0.00,
+                "Large": 2.00,
+                "Add Chicken": 2.50
+            }
+        },
+        "Chicken Wings": {
+            "description": "Crispy wings tossed in your choice of sauce: Buffalo, BBQ, or Plain",
+            "price": 8.99,
+            "options": {
+                "6 pieces": -2.00,
+                "10 pieces": 0.00,
+                "15 pieces": 4.00,
+                "Ranch Dip": 0.50,
+                "Blue Cheese Dip": 0.50
+            }
         }
     },
     "Drinks": {
-        "Soda (Fountain)": {
-            "description": "Coke, Diet Coke, Sprite, Dr Pepper, Lemonade.",
-            "price": 2.49
+        "Soda": {
+            "description": "Coca-Cola, Diet Coke, Sprite, or Dr. Pepper",
+            "price": 2.50,
+            "options": {
+                "Small": -0.50,
+                "Medium": 0.00,
+                "Large": 0.75
+            }
         },
         "Iced Tea": {
-            "description": "Sweet or Unsweet.",
-            "price": 2.49
+            "description": "Freshly brewed sweet or unsweetened tea",
+            "price": 2.25,
+            "options": {
+                "Small": -0.50,
+                "Medium": 0.00,
+                "Large": 0.75
+            }
         },
         "Bottled Water": {
-            "description": "Spring water.",
-            "price": 1.99
+            "description": "Purified bottled water",
+            "price": 1.50,
+            "options": {}
         },
         "Milkshake (Vanilla)": {
             "description": "Classic vanilla milkshake.",
