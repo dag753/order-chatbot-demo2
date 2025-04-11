@@ -97,6 +97,9 @@ def render_sidebar(menu: Dict[str, Dict[str, Any]], actions: List[str], cart_ite
         st.session_state.messages = []
         st.session_state.actions = []
         st.session_state.response_times = {}
+        # Also clear the cart and reset status
+        st.session_state.current_cart = []
+        st.session_state.cart_status = "OPEN"
         st.rerun()
 
     st.sidebar.divider() # Add a visual separator
