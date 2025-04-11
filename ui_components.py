@@ -179,13 +179,43 @@ def render_sidebar(menu: Dict[str, Dict[str, Any]], actions: List[str], cart_ite
     #     st.sidebar.write("No actions yet.")
 
 
-def display_chat_messages(messages: List[Dict[str, str]], response_times: Dict[int, float]):
+def display_chat_messages(messages: List[Dict[str, str]], response_times: Dict[int, Dict[str, Any]]):
     """Displays the chat history in the main area."""
     for i, message in enumerate(messages):
         with st.chat_message(message["role"]):
-            st.markdown(message["content"], unsafe_allow_html=False)
-            # Display response time if available for assistant messages
+            content = message["content"]
+            # For assistant messages, replace \n with markdown line break (space-space-newline)
+            if message["role"] == "assistant":
+                content = content.replace('\n', '  \n') 
+            st.markdown(content, unsafe_allow_html=False)
+            
+            # Display response time and token counts if available for assistant messages
             if message["role"] == "assistant" and i in response_times:
-                time_taken = response_times[i]
-                if time_taken > 0:
-                    st.caption(f"*Response time: {time_taken:.2f}s*") 
+                # Get response info - handle both the old format (float) and new format (dict)
+                response_info = response_times[i]
+                
+                if isinstance(response_info, float):
+                    # Handle old format (just a time value)
+                    st.caption(f"*Response time: {response_info:.2f}s*")
+                else:
+                    # Handle new format (dictionary with time and token counts)
+                    time_taken = response_info.get("time", 0)
+                    prompt_tokens = response_info.get("prompt_tokens")
+                    completion_tokens = response_info.get("completion_tokens")
+                    
+                    # Basic debugging - show raw token data for verification
+                    if time_taken > 0:
+                        caption = f"*Response time: {time_taken:.2f}s"
+                        # Add token counts if available
+                        if prompt_tokens is not None:
+                            caption += f", prompt tokens: {prompt_tokens}"
+                        if completion_tokens is not None:
+                            caption += f", completion tokens: {completion_tokens}"
+                        if prompt_tokens is None and completion_tokens is None:
+                            caption += " (token data unavailable)"
+                        caption += "*"
+                        st.caption(caption)
+                        
+                        # For debugging - show the raw response_info
+                        # token_debug = f"Debug - Raw response info: {response_info}"
+                        # st.caption(token_debug) 

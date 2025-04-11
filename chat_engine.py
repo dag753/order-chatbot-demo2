@@ -21,6 +21,8 @@ class ResponseEvent(Event):
     original_query: Optional[str] = None # Add field to carry original query
     cart_items: Optional[List[Dict[str, Any]]] = None # Add field for cart items
     cart_status: Optional[str] = None # Add field for cart status
+    prompt_tokens: Optional[int] = None # Add field for prompt tokens
+    completion_tokens: Optional[int] = None # Add field for completion tokens
 
 class ChatResponseStopEvent(StopEvent):
     """Custom StopEvent with response and action_type fields."""
@@ -28,6 +30,8 @@ class ChatResponseStopEvent(StopEvent):
     action_type: str
     cart_items: Optional[List[Dict[str, Any]]] = None # Add field for cart items
     cart_status: Optional[str] = None # Add field for cart status
+    prompt_tokens: Optional[int] = None # Add field for prompt tokens
+    completion_tokens: Optional[int] = None # Add field for completion tokens
 
 class FoodOrderingWorkflow(Workflow):
     """
@@ -48,6 +52,9 @@ class FoodOrderingWorkflow(Workflow):
         self.menu = menu
         self.chat_history = chat_history or []
         self.menu_text = menu_to_string(menu)
+        # Add token tracking variables
+        self.last_prompt_tokens = None
+        self.last_completion_tokens = None
         logger.info(f"FoodOrderingWorkflow initialized with timeout={timeout}")
     
     @step
@@ -147,9 +154,69 @@ class FoodOrderingWorkflow(Workflow):
         router_response = await llm.acomplete(router_prompt)
         elapsed = time.time() - start_time
         
+        # Detailed debug logging of the raw response object
+        response_type = type(router_response).__name__
+        has_additional_kwargs = hasattr(router_response, 'additional_kwargs')
+        additional_kwargs_type = type(getattr(router_response, 'additional_kwargs', None)).__name__
+        logger.info(f"DEBUG: Response type={response_type}, has_additional_kwargs={has_additional_kwargs}, additional_kwargs_type={additional_kwargs_type}")
+        
+        if has_additional_kwargs:
+            additional_kwargs = router_response.additional_kwargs
+            logger.info(f"DEBUG: additional_kwargs keys: {additional_kwargs.keys() if isinstance(additional_kwargs, dict) else 'Not a dict'}")
+            if isinstance(additional_kwargs, dict) and 'token_usage' in additional_kwargs:
+                token_usage = additional_kwargs['token_usage']
+                logger.info(f"DEBUG: token_usage={token_usage}, type={type(token_usage)}")
+        
+        # Extract token usage with extensive error handling (Corrected)
+        prompt_tokens = None
+        completion_tokens = None
+        try:
+            if hasattr(router_response, 'additional_kwargs') and isinstance(router_response.additional_kwargs, dict):
+                kwargs_dict = router_response.additional_kwargs # Get the dictionary directly
+                logger.debug(f"Token Extraction: kwargs_dict = {kwargs_dict}") # Log the dict
+                if 'prompt_tokens' in kwargs_dict:
+                    p_tokens = kwargs_dict['prompt_tokens'] # Read the value
+                    logger.debug(f"Token Extraction: Found p_tokens = {p_tokens} (type: {type(p_tokens)})")
+                    if isinstance(p_tokens, str) and p_tokens.isdigit():
+                        prompt_tokens = int(p_tokens)
+                        logger.debug(f"Token Extraction: Assigned prompt_tokens = {prompt_tokens} (from str)")
+                    elif isinstance(p_tokens, int):
+                        prompt_tokens = p_tokens # Assign if already int
+                        logger.debug(f"Token Extraction: Assigned prompt_tokens = {prompt_tokens} (from int)")
+                    else:
+                        logger.debug("Token Extraction: p_tokens was not str/digit or int.")
+                else:
+                    logger.debug("Token Extraction: 'prompt_tokens' key not found.")
+
+                if 'completion_tokens' in kwargs_dict:
+                    c_tokens = kwargs_dict['completion_tokens'] # Read the value
+                    logger.debug(f"Token Extraction: Found c_tokens = {c_tokens} (type: {type(c_tokens)})")
+                    if isinstance(c_tokens, str) and c_tokens.isdigit():
+                        completion_tokens = int(c_tokens)
+                        logger.debug(f"Token Extraction: Assigned completion_tokens = {completion_tokens} (from str)")
+                    elif isinstance(c_tokens, int):
+                        completion_tokens = c_tokens # Assign if already int
+                        logger.debug(f"Token Extraction: Assigned completion_tokens = {completion_tokens} (from int)")
+                    else:
+                        logger.debug("Token Extraction: c_tokens was not str/digit or int.")
+                else:
+                     logger.debug("Token Extraction: 'completion_tokens' key not found.")
+            else:
+                logger.debug("Token Extraction: No valid additional_kwargs found.")
+        except Exception as token_err:
+            logger.error(f"Error extracting token counts: {token_err}")
+            # Ensure they remain None on error
+            prompt_tokens = None
+            completion_tokens = None
+            
+        # Store token info in class variables for other methods to access
+        self.last_prompt_tokens = prompt_tokens
+        self.last_completion_tokens = completion_tokens
+        
         # Parse the JSON response
         response_text = router_response.text.strip()
-        logger.info(f"Router response (took {elapsed:.2f}s): {response_text}")
+        # Updated log message
+        logger.info(f"Router response (took {elapsed:.2f}s, prompt_tokens={prompt_tokens}, completion_tokens={completion_tokens}): {response_text}")
         
         # Extract intent and direct response from JSON
         intent = ""
@@ -241,7 +308,9 @@ class FoodOrderingWorkflow(Workflow):
                 result = ResponseEvent(
                     response=response,
                     action_type=action_type,
-                    original_query=query # Pass query for next step
+                    original_query=query, # Pass query for next step
+                    prompt_tokens=prompt_tokens if isinstance(prompt_tokens, int) else None,
+                    completion_tokens=completion_tokens if isinstance(completion_tokens, int) else None
                 )
             elif intent == "order":
                 logger.info("Intent: ORDER. Returning acknowledgment.")
@@ -254,7 +323,9 @@ class FoodOrderingWorkflow(Workflow):
                 result = ResponseEvent(
                     response=response,
                     action_type=action_type,
-                    original_query=query # Pass query for next step
+                    original_query=query, # Pass query for next step
+                    prompt_tokens=prompt_tokens if isinstance(prompt_tokens, int) else None,
+                    completion_tokens=completion_tokens if isinstance(completion_tokens, int) else None
                 )
             elif intent == "order_confirmation":
                 logger.info("Intent: ORDER_CONFIRMATION. Handling order confirmation.")
@@ -263,17 +334,23 @@ class FoodOrderingWorkflow(Workflow):
                 result = ResponseEvent(
                     response=response,
                     action_type=action_type,
-                    original_query=query
+                    original_query=query,
+                    prompt_tokens=prompt_tokens if isinstance(prompt_tokens, int) else None,
+                    completion_tokens=completion_tokens if isinstance(completion_tokens, int) else None
                 )
             elif intent == "greeting":
                 logger.info("Handling greeting directly")
                 response = direct_response
                 action_type = "greeting"
+                # Log tokens right before creating the event
+                logger.info(f"DEBUG (classify_and_respond): Tokens before creating greeting StopEvent: prompt={prompt_tokens}, completion={completion_tokens}")
                 # Return a ChatResponseStopEvent directly for greeting
                 result = ChatResponseStopEvent(
                     result=None,  # Required by StopEvent
                     response=response,
-                    action_type=action_type
+                    action_type=action_type,
+                    prompt_tokens=prompt_tokens, # Pass tokens directly
+                    completion_tokens=completion_tokens # Pass tokens directly
                 )
             elif intent == "end":
                 logger.info("Handling end conversation")
@@ -284,7 +361,9 @@ class FoodOrderingWorkflow(Workflow):
                 result = ChatResponseStopEvent(
                     result=None,  # Required by StopEvent
                     response=response,
-                    action_type=action_type
+                    action_type=action_type,
+                    prompt_tokens=self.last_prompt_tokens, # Use tokens from the handler
+                    completion_tokens=self.last_completion_tokens # Use tokens from the handler
                 )
             elif intent == "history":
                 logger.info("Handling history query directly")
@@ -294,8 +373,10 @@ class FoodOrderingWorkflow(Workflow):
                 result = ChatResponseStopEvent(
                     result=None,  # Required by StopEvent
                     response=response,
-                    action_type=action_type
-                )
+                    action_type=action_type,
+                    prompt_tokens=prompt_tokens, # Pass tokens directly
+                    completion_tokens=completion_tokens # Pass tokens directly
+                 )
             elif intent == "irrelevant":
                  logger.info("Handling irrelevant query directly")
                  response = direct_response
@@ -304,7 +385,9 @@ class FoodOrderingWorkflow(Workflow):
                  result = ChatResponseStopEvent(
                     result=None,  # Required by StopEvent
                     response=response,
-                    action_type=action_type
+                    action_type=action_type,
+                    prompt_tokens=prompt_tokens, # Pass tokens directly
+                    completion_tokens=completion_tokens # Pass tokens directly
                  )
             else: # Should not happen due to validation, but good to have a fallback
                 logger.error(f"Reached unexpected else block for intent: {intent}")
@@ -314,10 +397,12 @@ class FoodOrderingWorkflow(Workflow):
                 result = ChatResponseStopEvent(
                     result=None,  # Required by StopEvent
                     response=response,
-                    action_type=action_type
+                    action_type=action_type,
+                    prompt_tokens=prompt_tokens, # Pass tokens directly
+                    completion_tokens=completion_tokens # Pass tokens directly
                 )
 
-            logger.info(f"Step 1 Result: Type='{action_type}', Response='{response[:50]}...'")
+            logger.info(f"Step 1 Result: Type='{action_type}', Response='{response[:50]}...', Prompt Tokens={result.prompt_tokens if hasattr(result, 'prompt_tokens') else 'N/A'}, Completion Tokens={result.completion_tokens if hasattr(result, 'completion_tokens') else 'N/A'}")
             return result
             
         except Exception as e:
@@ -326,7 +411,9 @@ class FoodOrderingWorkflow(Workflow):
             return ChatResponseStopEvent(
                 result=None,  # Required by StopEvent
                 response="I'm sorry, I encountered an error and cannot process your request. I can only assist with menu questions and food orders.",
-                action_type="error"
+                action_type="error",
+                prompt_tokens=None,
+                completion_tokens=None
             )
     
     @step
@@ -338,59 +425,81 @@ class FoodOrderingWorkflow(Workflow):
         """
         logger.info(f"Entering generate_detailed_response with action_type: {ev.action_type}")
         
+        # Initialize token variables to None for this step
+        prompt_tokens = None
+        completion_tokens = None
+        
         if ev.action_type == "menu_inquiry_pending":
             logger.info("Handling pending menu inquiry")
             if ev.original_query:
                 response_text = await self._handle_menu_query(ev.original_query)
+                # Retrieve tokens stored by the handler
+                prompt_tokens = self.last_prompt_tokens
+                completion_tokens = self.last_completion_tokens
                 logger.info(f"Generated detailed menu response: {response_text[:50]}...")
                 return ResponseEvent(
                     response=response_text,
                     action_type="menu_inquiry", # Final action type
-                    cart_items=None # No cart changes for menu inquiries
+                    cart_items=None, # No cart changes for menu inquiries
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens
                 )
             else:
                 logger.error("Original query missing for menu_inquiry_pending")
-                return ResponseEvent(response="Error: Missing query for menu info.", action_type="error", cart_items=None)
+                return ResponseEvent(response="Error: Missing query for menu info.", action_type="error", cart_items=None, prompt_tokens=None, completion_tokens=None)
                 
         elif ev.action_type == "order_action_pending":
             logger.info("Handling pending order action")
             if ev.original_query:
                 response_text, cart_items = await self._handle_order_query(ev.original_query)
+                 # Retrieve tokens stored by the handler
+                prompt_tokens = self.last_prompt_tokens
+                completion_tokens = self.last_completion_tokens
                 logger.info(f"Generated detailed order response: {response_text[:50]}...")
                 return ResponseEvent(
                     response=response_text,
                     action_type="order_action", # Final action type
-                    cart_items=cart_items # Include cart items
+                    cart_items=cart_items, # Include cart items
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens
                 )
             else:
                  logger.error("Original query missing for order_action_pending")
-                 return ResponseEvent(response="Error: Missing query for order action.", action_type="error", cart_items=None)
+                 return ResponseEvent(response="Error: Missing query for order action.", action_type="error", cart_items=None, prompt_tokens=None, completion_tokens=None)
         
         elif ev.action_type == "order_confirmation_pending":
             logger.info("Handling pending order confirmation")
             if ev.original_query:
                 response_text, cart_items, cart_status = await self._handle_order_confirmation(ev.original_query)
+                # Retrieve tokens stored by the handler
+                prompt_tokens = self.last_prompt_tokens
+                completion_tokens = self.last_completion_tokens
                 logger.info(f"Generated order confirmation response: {response_text[:50]}...")
                 return ResponseEvent(
                     response=response_text,
                     action_type="order_confirmation", # Final action type
                     cart_items=cart_items, # Include cart items
-                    cart_status=cart_status # Include updated cart status
+                    cart_status=cart_status, # Include updated cart status
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens
                 )
             else:
                 logger.error("Original query missing for order_confirmation_pending")
-                return ResponseEvent(response="Error: Missing query for order confirmation.", action_type="error", cart_items=None)
+                return ResponseEvent(response="Error: Missing query for order confirmation.", action_type="error", cart_items=None, prompt_tokens=None, completion_tokens=None)
                  
         else:
             # If action type is already final (greeting, end, irrelevant, error, history), pass through
             # Explicitly create a new event object to avoid potential issues with object identity.
             logger.info(f"Passing through response with final action_type: {ev.action_type} by creating new event")
+            # Use the tokens from the incoming event, as no new handler was called
             return ResponseEvent(
                 response=ev.response,
                 action_type=ev.action_type,
                 original_query=ev.original_query, # Ensure all relevant fields are copied
-                cart_items=None, # No cart changes for non-order actions
-                cart_status=ev.cart_status # Pass through cart status
+                cart_items=ev.cart_items, # Pass through cart items
+                cart_status=ev.cart_status, # Pass through cart status
+                prompt_tokens=ev.prompt_tokens, # Pass through tokens from previous step
+                completion_tokens=ev.completion_tokens # Pass through tokens from previous step
             )
 
     @step
@@ -399,6 +508,15 @@ class FoodOrderingWorkflow(Workflow):
         Final step: Convert ResponseEvent to ChatResponseStopEvent
         """
         logger.info(f"Finalizing response: {ev.response[:30]}...")
+        
+        # The incoming ResponseEvent (ev) should now have the correct tokens
+        # from either the initial classify_and_respond or the generate_detailed_response step.
+        prompt_tokens = ev.prompt_tokens
+        completion_tokens = ev.completion_tokens
+        
+        # Log token info being used in finalize
+        logger.info(f"Finalize using token values: prompt_tokens={prompt_tokens}, completion_tokens={completion_tokens}")
+        
         # Create our custom ChatResponseStopEvent with proper fields
         result = ChatResponseStopEvent(
             # Set 'result' to None (required by StopEvent) 
@@ -407,18 +525,24 @@ class FoodOrderingWorkflow(Workflow):
             response=ev.response,
             action_type=ev.action_type,
             cart_items=ev.cart_items, # Pass through cart items
-            cart_status=ev.cart_status # Pass through cart status
+            cart_status=ev.cart_status, # Pass through cart status
+            prompt_tokens=prompt_tokens, # Use the tokens from the event
+            completion_tokens=completion_tokens # Use the tokens from the event
         )
-        logger.info(f"Created ChatResponseStopEvent with fields: response={result.response[:20]}..., action_type={result.action_type}")
+        logger.info(f"Created ChatResponseStopEvent with fields: response={result.response[:20]}..., action_type={result.action_type}, prompt_tokens={result.prompt_tokens}, completion_tokens={result.completion_tokens}")
         return result
     
     async def _handle_menu_query(self, query: str) -> str:
         """Handle menu-related queries"""
         menu_template = f"""
-        You are a helpful restaurant assistant providing information about menu items.
+        You are a helpful restaurant assistant providing information about menu items and guiding users towards placing an order.
         Respond concisely, like a text message (under 320 characters).
         Summarize information where possible, especially if the user asks for general categories or multiple items.
         **Use the provided conversation history to understand the context and avoid repeating information unnecessarily.**
+        
+        **Presenting Options:**
+        - When presenting specific items or options from the menu (e.g., sizes, toppings, different types of drinks), list them using CAPITAL LETTERS (A, B, C...). 
+        - Clearly state that the user can reply with either the LETTER or the full NAME of the option.
         
         **Handling Follow-up for "More Details":**
         - If the user asks for "more details" after you've provided a summary, look at your *immediately preceding message* in the history.
@@ -427,10 +551,17 @@ class FoodOrderingWorkflow(Workflow):
         - Do NOT repeat the item names and prices from the summary unless essential for context (e.g., listing options with price modifiers).
         - Keep the response concise and under the character limit.
         
+        **Guiding towards Purchase:**
+        - After providing information about an item or category, gently ask if the user would like to add anything to their order or if they need more information.
+        
         Be friendly and informative about prices and descriptions.
         Use standard text formatting. Avoid complex markdown. Use bold (**) for item names only.
         The complete menu is as follows:
         {self.menu_text}
+        
+        **Example Interaction (Presenting Options):**
+        User: "What kind of pizzas do you have?"
+        Assistant: "We have a few options:\nA. **Pepperoni Pizza**: $12.00\nB. **Margherita Pizza**: $11.00\nC. **Veggie Pizza**: $11.50\nYou can reply with the letter (A, B, C) or the name. Would you like to add one to your order or hear more details?"
         """
         
         # Generate response
@@ -447,7 +578,55 @@ class FoodOrderingWorkflow(Workflow):
             response = await llm.achat(messages)
             elapsed = time.time() - start_time
             
-            logger.info(f"_handle_menu_query: Got response in {elapsed:.2f}s")
+            # Detailed debug logging of the raw response object
+            response_type = type(response).__name__
+            has_additional_kwargs = hasattr(response, 'additional_kwargs')
+            additional_kwargs_type = type(getattr(response, 'additional_kwargs', None)).__name__
+            logger.info(f"DEBUG: Response type={response_type}, has_additional_kwargs={has_additional_kwargs}, additional_kwargs_type={additional_kwargs_type}")
+            
+            if has_additional_kwargs:
+                additional_kwargs = response.additional_kwargs
+                logger.info(f"DEBUG: additional_kwargs keys: {additional_kwargs.keys() if isinstance(additional_kwargs, dict) else 'Not a dict'}")
+                if isinstance(additional_kwargs, dict) and 'token_usage' in additional_kwargs:
+                    token_usage = additional_kwargs['token_usage']
+                    logger.info(f"DEBUG: token_usage={token_usage}, type={type(token_usage)}")
+            
+            # --- START: Robust Token Extraction (Corrected - Direct Access) ---
+            prompt_tokens = None
+            completion_tokens = None
+            try:
+                if hasattr(response, 'additional_kwargs') and isinstance(response.additional_kwargs, dict):
+                    kwargs_dict = response.additional_kwargs # Get the dictionary directly
+                    if 'prompt_tokens' in kwargs_dict:
+                        p_tokens = kwargs_dict['prompt_tokens']
+                        if isinstance(p_tokens, str) and p_tokens.isdigit():
+                            prompt_tokens = int(p_tokens)
+                        elif isinstance(p_tokens, int):
+                            prompt_tokens = p_tokens
+                            
+                    if 'completion_tokens' in kwargs_dict:
+                        c_tokens = kwargs_dict['completion_tokens']
+                        if isinstance(c_tokens, str) and c_tokens.isdigit():
+                            completion_tokens = int(c_tokens)
+                        elif isinstance(c_tokens, int):
+                            completion_tokens = c_tokens
+                else:
+                    # Use actual method name in log
+                    logger.debug("Token Extraction (_handle_menu_query): No valid additional_kwargs found.")
+            except Exception as token_err:
+                 # Use actual method name in log
+                logger.error(f"Error extracting token counts for _handle_menu_query: {token_err}")
+                prompt_tokens = None # Ensure reset on error
+                completion_tokens = None # Ensure reset on error
+            # --- END: Robust Token Extraction (Corrected - Direct Access) ---
+
+            # Store tokens in class variables
+            self.last_prompt_tokens = prompt_tokens
+            self.last_completion_tokens = completion_tokens
+            
+            # Updated log message
+            logger.info(f"_handle_menu_query: Got response in {elapsed:.2f}s (prompt_tokens={prompt_tokens}, completion_tokens={completion_tokens})")
+            
             return response.message.content
         except Exception as e:
             logger.error(f"_handle_menu_query: Error: {type(e).__name__}: {str(e)}")
@@ -456,13 +635,17 @@ class FoodOrderingWorkflow(Workflow):
     async def _handle_order_query(self, query: str) -> str:
         """Handle order-related actions"""
         order_template = f"""
-        You are an assistant helping with food orders.
+        You are an assistant helping with food orders and guiding the user towards completing their purchase.
         Respond concisely, like a text message (under 320 characters).
         **Use the provided conversation history to understand the current order status and context.**
         Be clear about prices and options. Summarize complex orders or options if necessary.
         Offer to provide more detail if needed.
         If they want something not on the menu, politely inform them it's unavailable.
         
+        **Presenting Options:**
+        - When presenting choices related to the order (e.g., confirming removal, asking about options for an item being added), list them using CAPITAL LETTERS (A, B, C...). 
+        - Clearly state that the user can reply with either the LETTER or the full NAME/description of the option.
+
         In addition to your text response, you must also manage and return the user's cart state.
         You need to parse the user's intent and:
         1. For "add" - add items to the cart
@@ -470,10 +653,11 @@ class FoodOrderingWorkflow(Workflow):
         3. For "change" - modify existing items (e.g., change quantity, options)
         4. For "upgrade" - upgrade items (e.g., size, add-ons)
         5. For "cancel order" - empty the cart
-        6. For "make order" - finalize the cart
+        6. For "make order" / "checkout" / "confirm" - This should be handled by the ORDER_CONFIRMATION intent, but acknowledge if the user explicitly mentions it here and potentially ask if they are ready to confirm.
         
         When responding, output BOTH:
-        1. A conversational text message acknowledging the user's action
+        1. A conversational text message acknowledging the user's action. 
+           - After modifying the cart (add/remove/change), confirm the current state of the cart and ask if they want to add anything else or proceed to checkout.
         2. A valid JSON representation of their updated cart
         
         The cart should be a JSON array of objects with properties:
@@ -484,13 +668,17 @@ class FoodOrderingWorkflow(Workflow):
         
         FORMAT:
         {{
-          "response": "Your natural language response here",
-          "cart": []
+          "response": "Your natural language response here, gently guiding towards checkout if appropriate.",
+          "cart": [updated cart items]
         }}
         
         Based on the menu information and the user's request, help them place or modify their order.
         The complete menu is as follows:
         {self.menu_text}
+        
+        **Example Interaction (Presenting Options):**
+        User: "Add a coke"
+        Assistant: "Sure thing. We have a few sizes:\nA. **Regular Coke**: $2.00\nB. **Large Coke**: $2.75\nYou can reply with the letter (A, B) or the size name. Which one would you like?"
         """
         
         # Generate response
@@ -502,12 +690,58 @@ class FoodOrderingWorkflow(Workflow):
         logger.info("_handle_order_query: Sending request to OpenAI")
         llm = OpenAI(model="gpt-4o", temperature=0.7, request_timeout=30)
         try:
-            # Measure response time for order query
             start_time = time.time()
             response = await llm.achat(messages)
             elapsed = time.time() - start_time
             
-            logger.info(f"_handle_order_query: Got response in {elapsed:.2f}s")
+            # Detailed debug logging of the raw response object
+            response_type = type(response).__name__
+            has_additional_kwargs = hasattr(response, 'additional_kwargs')
+            additional_kwargs_type = type(getattr(response, 'additional_kwargs', None)).__name__
+            logger.info(f"DEBUG: Response type={response_type}, has_additional_kwargs={has_additional_kwargs}, additional_kwargs_type={additional_kwargs_type}")
+            
+            if has_additional_kwargs:
+                additional_kwargs = response.additional_kwargs
+                logger.info(f"DEBUG: additional_kwargs keys: {additional_kwargs.keys() if isinstance(additional_kwargs, dict) else 'Not a dict'}")
+                if isinstance(additional_kwargs, dict) and 'token_usage' in additional_kwargs:
+                    token_usage = additional_kwargs['token_usage']
+                    logger.info(f"DEBUG: token_usage={token_usage}, type={type(token_usage)}")
+            
+            # --- START: Robust Token Extraction (Corrected - Direct Access) ---
+            prompt_tokens = None
+            completion_tokens = None
+            try:
+                if hasattr(response, 'additional_kwargs') and isinstance(response.additional_kwargs, dict):
+                    kwargs_dict = response.additional_kwargs # Get the dictionary directly
+                    if 'prompt_tokens' in kwargs_dict:
+                        p_tokens = kwargs_dict['prompt_tokens']
+                        if isinstance(p_tokens, str) and p_tokens.isdigit():
+                            prompt_tokens = int(p_tokens)
+                        elif isinstance(p_tokens, int):
+                            prompt_tokens = p_tokens
+                            
+                    if 'completion_tokens' in kwargs_dict:
+                        c_tokens = kwargs_dict['completion_tokens']
+                        if isinstance(c_tokens, str) and c_tokens.isdigit():
+                            completion_tokens = int(c_tokens)
+                        elif isinstance(c_tokens, int):
+                            completion_tokens = c_tokens
+                else:
+                    # Use actual method name in log
+                    logger.debug("Token Extraction (_handle_order_query): No valid additional_kwargs found.")
+            except Exception as token_err:
+                 # Use actual method name in log
+                logger.error(f"Error extracting token counts for _handle_order_query: {token_err}")
+                prompt_tokens = None # Ensure reset on error
+                completion_tokens = None # Ensure reset on error
+            # --- END: Robust Token Extraction (Corrected - Direct Access) ---
+    
+            # Store tokens in class variables
+            self.last_prompt_tokens = prompt_tokens
+            self.last_completion_tokens = completion_tokens
+            
+            # Updated log message
+            logger.info(f"_handle_order_query: Got response in {elapsed:.2f}s (prompt_tokens={prompt_tokens}, completion_tokens={completion_tokens})")
             
             # Parse response to extract cart information
             response_content = response.message.content
@@ -565,12 +799,57 @@ class FoodOrderingWorkflow(Workflow):
         logger.info("_handle_end_conversation: Sending request to OpenAI")
         llm = OpenAI(model="gpt-4o", temperature=0.7, request_timeout=30)
         try:
-            # Measure response time for end conversation
             start_time = time.time()
             response = await llm.achat(messages)
             elapsed = time.time() - start_time
             
-            logger.info(f"_handle_end_conversation: Got response in {elapsed:.2f}s")
+            # Detailed debug logging of the raw response object
+            response_type = type(response).__name__
+            has_additional_kwargs = hasattr(response, 'additional_kwargs')
+            additional_kwargs_type = type(getattr(response, 'additional_kwargs', None)).__name__
+            logger.info(f"DEBUG: Response type={response_type}, has_additional_kwargs={has_additional_kwargs}, additional_kwargs_type={additional_kwargs_type}")
+            
+            if has_additional_kwargs:
+                additional_kwargs = response.additional_kwargs
+                logger.info(f"DEBUG: additional_kwargs keys: {additional_kwargs.keys() if isinstance(additional_kwargs, dict) else 'Not a dict'}")
+                if isinstance(additional_kwargs, dict) and 'token_usage' in additional_kwargs:
+                    token_usage = additional_kwargs['token_usage']
+                    logger.info(f"DEBUG: token_usage={token_usage}, type={type(token_usage)}")
+            
+            # --- START: Robust Token Extraction (Corrected - Direct Access) ---
+            prompt_tokens = None
+            completion_tokens = None
+            try:
+                if hasattr(response, 'additional_kwargs') and isinstance(response.additional_kwargs, dict):
+                    kwargs_dict = response.additional_kwargs # Get the dictionary directly
+                    if 'prompt_tokens' in kwargs_dict:
+                        p_tokens = kwargs_dict['prompt_tokens']
+                        if isinstance(p_tokens, str) and p_tokens.isdigit():
+                            prompt_tokens = int(p_tokens)
+                        elif isinstance(p_tokens, int):
+                            prompt_tokens = p_tokens
+                            
+                    if 'completion_tokens' in kwargs_dict:
+                        c_tokens = kwargs_dict['completion_tokens']
+                        if isinstance(c_tokens, str) and c_tokens.isdigit():
+                            completion_tokens = int(c_tokens)
+                        elif isinstance(c_tokens, int):
+                            completion_tokens = c_tokens
+                else:
+                    # Use actual method name in log
+                    logger.debug("Token Extraction (_handle_end_conversation): No valid additional_kwargs found.")
+            except Exception as token_err:
+                logger.error(f"Error extracting token counts for _handle_end_conversation: {token_err}")
+                prompt_tokens = None # Ensure reset on error
+                completion_tokens = None # Ensure reset on error
+            # --- END: Robust Token Extraction (Corrected - Direct Access) ---
+            
+            # Store tokens in class variables
+            self.last_prompt_tokens = prompt_tokens
+            self.last_completion_tokens = completion_tokens
+            
+            # Updated log message
+            logger.info(f"_handle_end_conversation: Got response in {elapsed:.2f}s (prompt_tokens={prompt_tokens}, completion_tokens={completion_tokens})")
             return response.message.content
         except Exception as e:
             logger.error(f"_handle_end_conversation: Error: {type(e).__name__}: {str(e)}")
@@ -677,12 +956,57 @@ class FoodOrderingWorkflow(Workflow):
         logger.info("_handle_order_confirmation: Sending request to OpenAI")
         llm = OpenAI(model="gpt-4o", temperature=0.7, request_timeout=30)
         try:
-            # Measure response time for confirmation
             start_time = time.time()
             response = await llm.achat(messages)
             elapsed = time.time() - start_time
             
-            logger.info(f"_handle_order_confirmation: Got response in {elapsed:.2f}s")
+            # Detailed debug logging of the raw response object
+            response_type = type(response).__name__
+            has_additional_kwargs = hasattr(response, 'additional_kwargs')
+            additional_kwargs_type = type(getattr(response, 'additional_kwargs', None)).__name__
+            logger.info(f"DEBUG: Response type={response_type}, has_additional_kwargs={has_additional_kwargs}, additional_kwargs_type={additional_kwargs_type}")
+            
+            if has_additional_kwargs:
+                additional_kwargs = response.additional_kwargs
+                logger.info(f"DEBUG: additional_kwargs keys: {additional_kwargs.keys() if isinstance(additional_kwargs, dict) else 'Not a dict'}")
+                if isinstance(additional_kwargs, dict) and 'token_usage' in additional_kwargs:
+                    token_usage = additional_kwargs['token_usage']
+                    logger.info(f"DEBUG: token_usage={token_usage}, type={type(token_usage)}")
+            
+            # --- START: Robust Token Extraction (Corrected - Direct Access) ---
+            prompt_tokens = None
+            completion_tokens = None
+            try:
+                if hasattr(response, 'additional_kwargs') and isinstance(response.additional_kwargs, dict):
+                    kwargs_dict = response.additional_kwargs # Get the dictionary directly
+                    if 'prompt_tokens' in kwargs_dict:
+                        p_tokens = kwargs_dict['prompt_tokens']
+                        if isinstance(p_tokens, str) and p_tokens.isdigit():
+                            prompt_tokens = int(p_tokens)
+                        elif isinstance(p_tokens, int):
+                            prompt_tokens = p_tokens
+                            
+                    if 'completion_tokens' in kwargs_dict:
+                        c_tokens = kwargs_dict['completion_tokens']
+                        if isinstance(c_tokens, str) and c_tokens.isdigit():
+                            completion_tokens = int(c_tokens)
+                        elif isinstance(c_tokens, int):
+                            completion_tokens = c_tokens
+                else:
+                    # Use actual method name in log
+                    logger.debug("Token Extraction (_handle_order_confirmation): No valid additional_kwargs found.")
+            except Exception as token_err:
+                logger.error(f"Error extracting token counts for _handle_order_confirmation: {token_err}")
+                prompt_tokens = None # Ensure reset on error
+                completion_tokens = None # Ensure reset on error
+            # --- END: Robust Token Extraction (Corrected - Direct Access) ---
+            
+            # Store tokens in class variables
+            self.last_prompt_tokens = prompt_tokens
+            self.last_completion_tokens = completion_tokens
+            
+            # Updated log message
+            logger.info(f"_handle_order_confirmation: Got response in {elapsed:.2f}s (prompt_tokens={prompt_tokens}, completion_tokens={completion_tokens})")
             
             # Parse response to extract cart and status information
             response_content = response.message.content
