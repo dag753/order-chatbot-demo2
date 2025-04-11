@@ -25,26 +25,7 @@ logger.setLevel(logging.INFO) # Use INFO for less noise, DEBUG is very verbose
 load_dotenv()
 
 # --- Helper function for cleaning response text ---
-def clean_response_text(text: str) -> str:
-    """Cleans LLM response text to avoid markdown rendering issues while preserving intended newlines."""
-    if not isinstance(text, str):
-        return str(text) # Return string representation if not a string
-
-    # 1. Replace multiple spaces/tabs with a single space, but preserve newlines
-    cleaned_text = re.sub(r'[ \t]+', ' ', text)
-    # 2. Remove leading/trailing whitespace from each line, but keep the lines themselves
-    lines = [line.strip() for line in cleaned_text.splitlines()]
-    cleaned_text = '\n'.join(lines)
-    # 3. Remove potentially problematic characters except common punctuation, markdown (*), and explicitly allow newlines (\n)
-    # Allows letters, numbers, spaces, ., ,, !, ?, $, :, (, ), -, +, *, /, \n
-    # Regex updated to explicitly keep \n
-    cleaned_text = re.sub(r'[^a-zA-Z0-9\s.,!?$:()\-\+\*\\/\n]', '', cleaned_text)
-    # 4. Ensure markdown bolding has space around it or is at start/end
-    # Simplified this step - excessive spacing seemed less problematic than missing newlines
-    # cleaned_text = re.sub(r'(?<!\s)(\*\*)(?!\s)', r' \1 ', cleaned_text).strip() # Add space on both sides if missing
-    # cleaned_text = re.sub(r' +', ' ', cleaned_text) # Consolidate multiple spaces
-
-    return cleaned_text.strip()
+# This function is no longer used and will be removed.
 
 async def process_message(workflow, user_query):
     """Process a message through the workflow and return the response"""
@@ -185,8 +166,7 @@ async def handle_chat_submission(prompt: str):
                     action_type = "error"
                 # Apply basic text cleaning in case formatting wasn't done upstream
                 elif isinstance(initial_message_content, str):
-                    initial_message_content = clean_response_text(initial_message_content)
-                    logger.info("Applied text cleaning to Stage 1 response")
+                    pass # Cleaning is likely interfering with intended LLM markdown formatting
         
         # Display initial message (or error) in the first placeholder
         with chat_message_placeholder:
@@ -316,13 +296,12 @@ async def handle_chat_submission(prompt: str):
                     # Format the response text using the LLM formatter
                     try:
                         logger.info("Formatting Stage 2 response text with LLM...")
-                        detailed_response_content = await chat_workflow._format_response_text(detailed_response_content)
+                        detailed_response_content = await chat_workflow._format_response_text(detailed_response_content) # Removed formatting call
                     except Exception as format_err:
                         logger.error(f"Error formatting Stage 2 response: {format_err}")
                         # Continue with unformatted text
                         # Apply basic text cleaning as fallback
-                        detailed_response_content = clean_response_text(detailed_response_content)
-                        logger.info("Applied fallback text cleaning after formatting failure")
+                        pass # Formatting failure fallback
 
                 except Exception as e:
                     logger.error(f"Error in stage 2 handling ({action_type}): {e}", exc_info=True)

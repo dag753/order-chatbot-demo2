@@ -172,12 +172,7 @@ def render_sidebar(menu: Dict[str, Dict[str, Any]], actions: List[str], cart_ite
         st.sidebar.write("No items in menu. Add some above!")
 
     # Chat actions/logs display - REMOVED FROM HERE
-    # st.sidebar.subheader("Chatbot Actions")
-    # if actions:
-    #     for action in reversed(actions): # Show newest first
-    #         st.sidebar.info(action)
-    # else:
-    #     st.sidebar.write("No actions yet.")
+    pass # Removed commented code block
 
 
 def display_chat_messages(messages: List[Dict[str, str]], response_times: Dict[int, Dict[str, Any]]):
@@ -185,8 +180,9 @@ def display_chat_messages(messages: List[Dict[str, str]], response_times: Dict[i
     for i, message in enumerate(messages):
         with st.chat_message(message["role"]):
             content = message["content"]
-            st.markdown(content, unsafe_allow_html=False)
-            
+            # Replace st.markdown with st.text to prevent markdown rendering
+            st.text(content)
+
             # Display response time and token counts if available for assistant messages
             if message["role"] == "assistant" and i in response_times:
                 # Get response info - handle both the old format (float) and new format (dict)

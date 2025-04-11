@@ -57,6 +57,101 @@ class FoodOrderingWorkflow(Workflow):
         self.last_completion_tokens = None
         logger.info(f"FoodOrderingWorkflow initialized with timeout={timeout}")
     
+    async def _format_response_text(self, text: str) -> str:
+        """
+        Uses an LLM to format the text response for consistent, plain text output,
+        ensuring lists are lettered (A, B, C...) and suitable for SMS/basic chat.
+        Removes extraneous markdown.
+        """
+        logger.info(f"Formatting text (input): {text[:100]}...") # Log input
+
+        # Handle empty or whitespace-only input gracefully
+        if not text or text.isspace():
+            logger.info("Formatting text (input was empty/whitespace): Returning empty string.")
+            return ""
+
+        format_prompt = f"""
+        You are a text formatting assistant. Your task is to take the input text, clean it up, and format it for display in a simple text-based chat interface (like SMS).
+
+        **Formatting Rules (Apply these STRICTLY):**
+        1.  **Plain Text:** The final output MUST be plain text only. Remove ALL markdown formatting (like **, *, _, etc.). Exception: Keep existing newline characters (`\\n`) where they make sense for readability.
+        2.  **List Formatting:** Identify any lists of choices or options presented to the user. Reformat these lists so EACH item starts with a capital letter followed by a period and a space (A., B., C., etc.). Each item MUST be on its own line. Make sure the original item text follows the letter label. Preserve any existing list structure if it already uses letter labels correctly, just clean markdown.
+        3.  **Clarity:** Ensure the text is clear and easy to read. Do not add any conversational text, greetings, questions, or suggestions that were not present in the original input. Your ONLY job is to clean and reformat the *existing* text according to the rules.
+        4.  **No Extra Content:** Do not add headers, footers, or any text not derived from the original input.
+        5.  **Whitespace:** Trim leading/trailing whitespace from the final output. Preserve internal newlines essential for structure (like between list items or paragraphs). Ensure consistent line breaks around list items.
+
+        **Example Input 1 (with markdown and bad list):**
+        "Okay, we have the *Classic Chicken Sandwich* ($8.99) and the **Spicy Deluxe** ($9.99). Would you like one?\\n- Option 1: Classic\\n- Option 2: Spicy"
+
+        **Example Output 1 (formatted):**
+        "Okay, we have the Classic Chicken Sandwich ($8.99) and the Spicy Deluxe ($9.99). Would you like one?
+        A. Classic
+        B. Spicy"
+
+        **Example Input 2 (already somewhat formatted but needs standardization):**
+        "We have these pizza options:\\nA. Pepperoni Pizza ($12.00)\\nB. Margherita Pizza ($11.00)\\nWould you like to add one?"
+
+        **Example Output 2 (standardized):**
+        "We have these pizza options:
+        A. Pepperoni Pizza ($12.00)
+        B. Margherita Pizza ($11.00)
+        Would you like to add one?"
+
+        **Example Input 3 (Confirmation prompt):**
+        "Your order:\\n- 1 Classic Chicken Sandwich (extra cheese): $9.99\\n\\nTotal: $9.99\\n\\nWould you like to confirm this order?\\nA. Yes, confirm my order\\nB. No, I'd like to make changes"
+
+        **Example Output 3 (already correct, should pass through cleaned):**
+        "Your order:
+        - 1 Classic Chicken Sandwich (extra cheese): $9.99
+
+        Total: $9.99
+
+        Would you like to confirm this order?
+        A. Yes, confirm my order
+        B. No, I'd like to make changes"
+
+        **Input Text to Format:**
+        ---
+        {text}
+        ---
+
+        **Formatted Output:**
+        """
+
+        llm = OpenAI(model="gpt-4o", temperature=0.0, request_timeout=20) # Use a capable model, maybe shorter timeout ok
+        try:
+            response = await llm.acomplete(format_prompt)
+            formatted_text = response.text.strip()
+            logger.info(f"Formatting text (output): {formatted_text[:100]}...") # Log output
+
+            # Basic validation: Check if the LLM returned an empty string when the input wasn't empty
+            if not formatted_text and text and not text.isspace():
+                logger.warning("Formatter LLM returned empty string unexpectedly. Falling back to original text.")
+                return text # Fallback
+
+            # --- START: Store Token Usage (Optional but good practice) ---
+            prompt_tokens = None
+            completion_tokens = None
+            try:
+                if hasattr(response, 'additional_kwargs') and isinstance(response.additional_kwargs, dict):
+                    kwargs_dict = response.additional_kwargs
+                    if 'prompt_tokens' in kwargs_dict:
+                        p_tokens = kwargs_dict['prompt_tokens']
+                        prompt_tokens = int(p_tokens) if isinstance(p_tokens, (int, str)) and str(p_tokens).isdigit() else None
+                    if 'completion_tokens' in kwargs_dict:
+                        c_tokens = kwargs_dict['completion_tokens']
+                        completion_tokens = int(c_tokens) if isinstance(c_tokens, (int, str)) and str(c_tokens).isdigit() else None
+                logger.debug(f"Formatter Tokens: p={prompt_tokens}, c={completion_tokens}")
+            except Exception as token_err:
+                logger.error(f"Error extracting formatter token counts: {token_err}")
+            # (Note: We aren't currently *using* these tokens elsewhere, but it's good to extract)
+            # --- END: Store Token Usage ---
+
+            return formatted_text
+        except Exception as e:
+            logger.error(f"Error during text formatting LLM call: {type(e).__name__}: {str(e)}. Returning original text.")
+            return text # Fallback to original text on error
+
     @step
     async def classify_and_respond(self, ctx: Context, ev: StartEvent) -> Union[ResponseEvent, ChatResponseStopEvent]:
         """
@@ -99,13 +194,13 @@ class FoodOrderingWorkflow(Workflow):
         
         Output Instructions:
         1. Return STRICTLY a JSON object with keys "intent" and "response".
-        2. For GREETING or HISTORY intents: Set the correct "intent". Provide a **concise** response text (under 320 characters) in the "response" field. Use the provided Conversation History context to answer HISTORY questions accurately. Summarize if necessary and offer to provide more detail if relevant.
-        3. For IRRELEVANT intent: Set "intent" to "IRRELEVANT". Provide a **concise**, empathetic refusal/explanation (under 320 characters) in the "response" field.
+        2. For GREETING or HISTORY intents: Set the correct "intent". Provide a **concise**, **plain text** response (under 320 characters, no markdown) in the "response" field. Use the provided Conversation History context to answer HISTORY questions accurately. Summarize if necessary and offer to provide more detail if relevant.
+        3. For IRRELEVANT intent: Set "intent" to "IRRELEVANT". Provide a **concise**, empathetic **plain text** refusal/explanation (under 320 characters, no markdown) in the "response" field.
         4. For MENU, ORDER, ORDER_CONFIRMATION, or END intents: Set the correct "intent" and set "response" to an empty string ("").
         
         Examples (History examples assume relevant context was in the provided history):
         User message: "hello"
-        Output: {{"intent": "GREETING", "response": "Hello! How can I help with the menu or your order?"}} # Concise
+        Output: {{"intent": "GREETING", "response": "Hello! How can I help with the menu or your order?"}} # Plain text
 
         User message: "What drinks do you have?"
         Output: {{"intent": "MENU", "response": ""}}
@@ -126,19 +221,19 @@ class FoodOrderingWorkflow(Workflow):
         Output: {{"intent": "ORDER_CONFIRMATION", "response": ""}}
 
         User message: "what did I ask before this?"
-        Output: {{"intent": "HISTORY", "response": "You previously asked about our sandwich options. Need more details on those, or can I help with something else?"}} # Concise, offers detail
+        Output: {{"intent": "HISTORY", "response": "You previously asked about our sandwich options. Need more details on those, or can I help with something else?"}} # Plain text
 
         User message: "What was my previous message?"
-        Output: {{"intent": "HISTORY", "response": "Your previous message was asking about drinks. Anything else I can help with?"}} # Concise summary
+        Output: {{"intent": "HISTORY", "response": "Your previous message was asking about drinks. Anything else I can help with?"}} # Plain text
 
         User message: "what was the first thing I asked?"
-        Output: {{"intent": "HISTORY", "response": "Looks like your first message was 'Hello'. How can I help now?"}} # Concise answer
+        Output: {{"intent": "HISTORY", "response": "Looks like your first message was 'Hello'. How can I help now?"}} # Plain text
 
         User message: "what did I order last time?"
-        Output: {{"intent": "HISTORY", "response": "We discussed you ordering pizza previously. Want to order that now or see the menu again?"}} # Concise summary
+        Output: {{"intent": "HISTORY", "response": "We discussed you ordering pizza previously. Want to order that now or see the menu again?"}} # Plain text
 
         User message: "tell me a joke"
-        Output: {{"intent": "IRRELEVANT", "response": "Sorry, I can't tell jokes! I'm here for menu questions or orders. Can I help with that?"}} # Concise
+        Output: {{"intent": "IRRELEVANT", "response": "Sorry, I can't tell jokes! I'm here for menu questions or orders. Can I help with that?"}} # Plain text
 
         User message: "thanks bye"
         Output: {{"intent": "END", "response": ""}}
@@ -239,7 +334,7 @@ class FoodOrderingWorkflow(Workflow):
                     intent = "irrelevant"
                     # Ensure we provide a default refusal if the intent was bad AND no response was given
                     if not direct_response:
-                         direct_response = "I'm sorry, I encountered an issue. I can only assist with menu questions and food orders."
+                         direct_response = "I'm sorry, I encountered an issue. I can only assist with menu questions and food orders." # Plain text
 
                 # If intent is GREETING, IRRELEVANT, or HISTORY, check response validity
                 if intent in ["greeting", "irrelevant", "history"]:
@@ -247,25 +342,25 @@ class FoodOrderingWorkflow(Workflow):
                        logger.warning(f"Invalid or empty direct response for intent '{intent}': '{direct_response}'. Using fallback message.")
                        # Provide a default response based on the (potentially defaulted) intent
                        if intent == "greeting":
-                            direct_response = "Hello! How can I help with the menu or your order?"
+                            direct_response = "Hello! How can I help with the menu or your order?" # Plain text
                        elif intent == "history":
-                            direct_response = "I can see you're asking about our previous conversation. How can I help you with our menu or placing an order?"
+                            direct_response = "I can see you're asking about our previous conversation. How can I help you with our menu or placing an order?" # Plain text
                        else: # irrelevant
-                            direct_response = "I'm sorry, I can only assist with questions about our menu and help you place an order."
+                            direct_response = "I'm sorry, I can only assist with questions about our menu and help you place an order." # Plain text
                    elif direct_response.strip() in ['{', '}', '[]', '[', ']', '{}', ':', '""', "''", ',', '.']:
                        logger.warning(f"Direct response for intent '{intent}' looks like a fragment: '{direct_response}'. Using fallback message.")
                        if intent == "greeting":
-                            direct_response = "Hello! How can I help with the menu or your order?"
+                            direct_response = "Hello! How can I help with the menu or your order?" # Plain text
                        elif intent == "history":
-                            direct_response = "I can see you're asking about our previous conversation. How can I help you with our menu or placing an order?"
+                            direct_response = "I can see you're asking about our previous conversation. How can I help you with our menu or placing an order?" # Plain text
                        else: # irrelevant
-                            direct_response = "I'm sorry, I can only assist with questions about our menu and help you place an order."
+                            direct_response = "I'm sorry, I can only assist with questions about our menu and help you place an order." # Plain text
                 
                 logger.info(f"Successfully parsed JSON response: intent='{intent}', response_length={len(direct_response)}")
             else:
                 logger.error("Response data is not a dictionary, defaulting to irrelevant")
                 intent = "irrelevant"
-                direct_response = "I'm sorry, I encountered an issue processing the response. I can only assist with menu questions and food orders."
+                direct_response = "I'm sorry, I encountered an issue processing the response. I can only assist with menu questions and food orders." # Plain text
         except json.JSONDecodeError as e:
             # Fallback if JSON parsing fails
             logger.error(f"Failed to parse JSON response: {e}")
@@ -282,7 +377,7 @@ class FoodOrderingWorkflow(Workflow):
                 logger.info("Fallback: Detected 'order/cart/checkout' keyword.")
             elif any(greeting in raw_text_lower for greeting in ["hello", "hi ", " how are"]):
                  intent = "greeting"
-                 direct_response = "Hello! How can I help you with the menu or your order today?" # Provide default greeting
+                 direct_response = "Hello! How can I help you with the menu or your order today?" # Provide default greeting - Plain text
                  logger.info("Fallback: Detected greeting keyword.")
             elif any(farewell in raw_text_lower for farewell in ["bye", "thank you", "thanks"]):
                  intent = "end"
@@ -290,7 +385,7 @@ class FoodOrderingWorkflow(Workflow):
             else:
                 # Only default to irrelevant if no keywords match
                 intent = "irrelevant"
-                direct_response = "I'm sorry, I had trouble understanding that. I can only assist with menu questions and food orders." # Specific message for this fallback path
+                direct_response = "I'm sorry, I had trouble understanding that. I can only assist with menu questions and food orders." # Specific message for this fallback path - Plain text
                 logger.info("Fallback: No relevant keywords detected, defaulting to irrelevant.")
                 
         logger.info(f"Intent classified as: '{intent}' (took {elapsed:.2f}s)")
@@ -303,7 +398,7 @@ class FoodOrderingWorkflow(Workflow):
         try:
             if intent == "menu":
                 logger.info("Intent: MENU. Returning acknowledgment.")
-                response = await self._format_response_text("Give us a moment while we research that for you.")
+                response = "Give us a moment while we research that for you." # Plain text ack
                 action_type = "menu_inquiry_pending" # Temporary type
                 result = ResponseEvent(
                     response=response,
@@ -316,9 +411,9 @@ class FoodOrderingWorkflow(Workflow):
                 logger.info("Intent: ORDER. Returning acknowledgment.")
                 # Basic check for modification keywords - can be enhanced
                 if any(kw in query.lower() for kw in ["change", "modify", "add", "remove", "update"]):
-                     response = await self._format_response_text("Give us a moment while we get that order modification ready for you.")
+                     response = "Give us a moment while we get that order modification ready for you." # Plain text ack
                 else:
-                     response = await self._format_response_text("Give us a moment while we get that order ready for you.")
+                     response = "Give us a moment while we get that order ready for you." # Plain text ack
                 action_type = "order_action_pending" # Temporary type
                 result = ResponseEvent(
                     response=response,
@@ -329,7 +424,7 @@ class FoodOrderingWorkflow(Workflow):
                 )
             elif intent == "order_confirmation":
                 logger.info("Intent: ORDER_CONFIRMATION. Handling order confirmation.")
-                response = await self._format_response_text("Confirming your order...")
+                response = "Confirming your order..." # Plain text ack
                 action_type = "order_confirmation_pending"
                 result = ResponseEvent(
                     response=response,
@@ -340,8 +435,8 @@ class FoodOrderingWorkflow(Workflow):
                 )
             elif intent == "greeting":
                 logger.info("Handling greeting directly")
-                # Format the direct response before sending
-                response = await self._format_response_text(direct_response)
+                # Use the direct response (already plain text)
+                response = direct_response
                 action_type = "greeting"
                 # Log tokens right before creating the event
                 logger.info(f"DEBUG (classify_and_respond): Tokens before creating greeting StopEvent: prompt={prompt_tokens}, completion={completion_tokens}")
@@ -356,8 +451,8 @@ class FoodOrderingWorkflow(Workflow):
             elif intent == "end":
                 logger.info("Handling end conversation")
                 # Call _handle_end_conversation directly as it's simple
-                raw_response = await self._handle_end_conversation(query)
-                response = await self._format_response_text(raw_response)
+                raw_response = await self._handle_end_conversation(query) # Gets plain text
+                response = raw_response # Use plain text directly
                 action_type = "end_conversation"
                 # Return a ChatResponseStopEvent directly for end
                 result = ChatResponseStopEvent(
@@ -369,8 +464,8 @@ class FoodOrderingWorkflow(Workflow):
                 )
             elif intent == "history":
                 logger.info("Handling history query directly")
-                # Format the direct response before sending
-                response = await self._format_response_text(direct_response)
+                # Use the direct response (already plain text)
+                response = direct_response
                 action_type = "history_query"
                 # Return a ChatResponseStopEvent directly for history
                 result = ChatResponseStopEvent(
@@ -382,8 +477,8 @@ class FoodOrderingWorkflow(Workflow):
                  )
             elif intent == "irrelevant":
                  logger.info("Handling irrelevant query directly")
-                 # Format the direct response before sending
-                 response = await self._format_response_text(direct_response)
+                 # Use the direct response (already plain text)
+                 response = direct_response
                  action_type = "irrelevant_query"
                  # Return a ChatResponseStopEvent directly for irrelevant
                  result = ChatResponseStopEvent(
@@ -395,7 +490,7 @@ class FoodOrderingWorkflow(Workflow):
                  )
             else: # Should not happen due to validation, but good to have a fallback
                 logger.error(f"Reached unexpected else block for intent: {intent}")
-                response = await self._format_response_text("I'm sorry, I'm not sure how to handle that. I can assist with menu questions and orders.")
+                response = "I'm sorry, I'm not sure how to handle that. I can assist with menu questions and orders." # Plain text error
                 action_type = "error"
                 # Return a ChatResponseStopEvent directly for error
                 result = ChatResponseStopEvent(
@@ -412,9 +507,11 @@ class FoodOrderingWorkflow(Workflow):
         except Exception as e:
             logger.error(f"Error in classify_and_respond logic block: {type(e).__name__}: {str(e)}")
             # Provide a generic refusal in case of errors in handlers
+            # Ensure formatting is done here if needed, or keep it simple
+            simple_error_response = "I'm sorry, I encountered an error and cannot process your request. I can only assist with menu questions and food orders." # Plain text error
             return ChatResponseStopEvent(
                 result=None,  # Required by StopEvent
-                response=await self._format_response_text("I'm sorry, I encountered an error and cannot process your request. I can only assist with menu questions and food orders."),
+                response=simple_error_response, # Use simple text
                 action_type="error",
                 prompt_tokens=None,
                 completion_tokens=None
@@ -436,14 +533,15 @@ class FoodOrderingWorkflow(Workflow):
         if ev.action_type == "menu_inquiry_pending":
             logger.info("Handling pending menu inquiry")
             if ev.original_query:
-                raw_response_text = await self._handle_menu_query(ev.original_query)
-                response_text = await self._format_response_text(raw_response_text)
+                response_text = await self._handle_menu_query(ev.original_query) # Gets plain text
+                # Format the response AFTER getting it
+                formatted_response = await self._format_response_text(response_text)
                 # Retrieve tokens stored by the handler
                 prompt_tokens = self.last_prompt_tokens
                 completion_tokens = self.last_completion_tokens
-                logger.info(f"Generated detailed menu response: {response_text[:50]}...")
+                logger.info(f"Generated detailed menu response: {formatted_response[:50]}...")
                 return ResponseEvent(
-                    response=response_text,
+                    response=formatted_response, # Use formatted text
                     action_type="menu_inquiry", # Final action type
                     cart_items=None, # No cart changes for menu inquiries
                     prompt_tokens=prompt_tokens,
@@ -456,14 +554,15 @@ class FoodOrderingWorkflow(Workflow):
         elif ev.action_type == "order_action_pending":
             logger.info("Handling pending order action")
             if ev.original_query:
-                raw_response_text, cart_items = await self._handle_order_query(ev.original_query)
-                response_text = await self._format_response_text(raw_response_text)
+                response_text, cart_items = await self._handle_order_query(ev.original_query) # Gets plain text
+                # Format the response AFTER getting it
+                formatted_response = await self._format_response_text(response_text)
                  # Retrieve tokens stored by the handler
                 prompt_tokens = self.last_prompt_tokens
                 completion_tokens = self.last_completion_tokens
-                logger.info(f"Generated detailed order response: {response_text[:50]}...")
+                logger.info(f"Generated detailed order response: {formatted_response[:50]}...")
                 return ResponseEvent(
-                    response=response_text,
+                    response=formatted_response, # Use formatted text
                     action_type="order_action", # Final action type
                     cart_items=cart_items, # Include cart items
                     prompt_tokens=prompt_tokens,
@@ -476,14 +575,15 @@ class FoodOrderingWorkflow(Workflow):
         elif ev.action_type == "order_confirmation_pending":
             logger.info("Handling pending order confirmation")
             if ev.original_query:
-                raw_response_text, cart_items, cart_status = await self._handle_order_confirmation(ev.original_query)
-                response_text = await self._format_response_text(raw_response_text)
+                response_text, cart_items, cart_status = await self._handle_order_confirmation(ev.original_query) # Gets plain text
+                # Format the response AFTER getting it
+                formatted_response = await self._format_response_text(response_text)
                 # Retrieve tokens stored by the handler
                 prompt_tokens = self.last_prompt_tokens
                 completion_tokens = self.last_completion_tokens
-                logger.info(f"Generated order confirmation response: {response_text[:50]}...")
+                logger.info(f"Generated order confirmation response: {formatted_response[:50]}...")
                 return ResponseEvent(
-                    response=response_text,
+                    response=formatted_response, # Use formatted text
                     action_type="order_confirmation", # Final action type
                     cart_items=cart_items, # Include cart items
                     cart_status=cart_status, # Include updated cart status
@@ -498,12 +598,11 @@ class FoodOrderingWorkflow(Workflow):
             # If action type is already final (greeting, end, irrelevant, error, history), pass through
             # Explicitly create a new event object to avoid potential issues with object identity.
             logger.info(f"Passing through response with final action_type: {ev.action_type} by creating new event")
-            # Format the response text even when passing through, just in case it wasn't formatted yet
-            # (e.g., if it came directly from classify_and_respond's direct handling)
-            formatted_response = await self._format_response_text(ev.response)
+            # The response should already be plain text from classify_and_respond
+            passthrough_response = ev.response 
             # Use the tokens from the incoming event, as no new handler was called
             return ResponseEvent(
-                response=formatted_response,
+                response=passthrough_response, # Use the original plain text response
                 action_type=ev.action_type,
                 original_query=ev.original_query, # Ensure all relevant fields are copied
                 cart_items=ev.cart_items, # Pass through cart items
@@ -549,7 +648,13 @@ class FoodOrderingWorkflow(Workflow):
         **Use the provided conversation history to understand the context and avoid repeating information unnecessarily.**
         
         **Presenting Options:**
-        - When presenting specific items or options from the menu (e.g., sizes, toppings, different types of drinks), list them clearly.
+        - ALWAYS present menu items and options with letter labels (A, B, C, etc.) at the beginning of each choice.
+        - When listing multiple items, present them in a clear lettered list format, with one option per line.
+        - Example:
+          We have these sandwich options:
+          A. Classic Chicken Sandwich ($8.99)
+          B. Spicy Deluxe Chicken Sandwich ($9.99)
+          C. Grilled Chicken Club ($10.49)
         
         **Handling Follow-up for "More Details":**
         - If the user asks for "more details" after you've provided a summary, look at your *immediately preceding message* in the history.
@@ -561,13 +666,18 @@ class FoodOrderingWorkflow(Workflow):
         - After providing information about an item or category, gently ask if the user would like to add anything to their order or if they need more information.
         
         Be friendly and informative about prices and descriptions.
-        Use standard text formatting. Avoid complex markdown initially. Use bold (**) for item names only.
+        Use standard text formatting. Use letter labels (A, B, C...) for options.
+        Do NOT use any markdown (like ** for bolding).
         The complete menu is as follows:
         {self.menu_text}
         
         **Example Interaction (Presenting Options):**
         User: "What kind of pizzas do you have?"
-        Assistant: "We have Pepperoni Pizza ($12.00), Margherita Pizza ($11.00), and Veggie Pizza ($11.50). Would you like to add one to your order or hear more details?"
+        Assistant: "We have these pizza options:
+        A. Pepperoni Pizza ($12.00)
+        B. Margherita Pizza ($11.00)
+        C. Veggie Pizza ($11.50)
+        Would you like to add one to your order or hear more details about any of these options?"
         """
         
         # Generate response
@@ -636,9 +746,9 @@ class FoodOrderingWorkflow(Workflow):
             return response.message.content
         except Exception as e:
             logger.error(f"_handle_menu_query: Error: {type(e).__name__}: {str(e)}")
-            return f"I'm sorry, I had trouble providing menu information. Error: {str(e)}"
+            return f"I'm sorry, I had trouble providing menu information. Error: {str(e)}" # Plain text error
     
-    async def _handle_order_query(self, query: str) -> str:
+    async def _handle_order_query(self, query: str) -> tuple[str, list]:
         """Handle order-related actions"""
         order_template = f"""
         You are an assistant helping with food orders and guiding the user towards completing their purchase.
@@ -648,16 +758,30 @@ class FoodOrderingWorkflow(Workflow):
         If they want something not on the menu, politely inform them it's unavailable.
         
         **Presenting Options (General):**
-        - When presenting choices related to the order (e.g., confirming removal, asking about different SIZES or TYPES like Coke vs Sprite), list them clearly.
+        - ALWAYS present choices with letter labels (A, B, C, etc.) at the beginning of each choice.
+        - This applies to menu items, customization options, and any selection the user needs to make.
+        - List each option on a new line.
+        - Use standard text formatting only. Do NOT use markdown (like ** for bolding).
+        - Example format for presenting drink sizes:
+          Would you like:
+          A. Small Coke ($2.00)
+          B. Medium Coke ($2.50)
+          C. Large Coke ($3.25)
         
         **Presenting Options (Item-Specific Add-ons/Modifications):**
         - **If the user adds an item that has specific options listed in the menu (like add cheese, add bacon, make it spicy for a sandwich):**
             - First, confirm the item was added (e.g., "Great choice! Added Classic Chicken Sandwich to your cart.").
             - Then, ask if they want to add any of *its specific options*.
-            - List these specific options clearly, including the price modifier (e.g., `+$.50`, `(no charge)`).
-            - Example: "Would you like to add any options like Add Cheese (+$1.00), Add Bacon (+$1.50), Make It Spicy (+$0.50), or Substitute Grilled Chicken (no charge)? Let me know if you want to add options, add more items, or checkout!".
+            - List these specific options clearly WITH LETTER LABELS (A, B, C, etc.), including the price modifier (e.g., `+$.50`, `(no charge)`). Use plain text.
+            - Example: 
+              "Would you like to add any options?
+              A. Add Cheese (+$1.00)
+              B. Add Bacon (+$1.50)
+              C. Make It Spicy (+$0.50)
+              D. Substitute Grilled Chicken (no charge)
+              Let me know if you want to add options, add more items, or checkout!"
         - **If the user adds an item with NO specific options listed in the menu:**
-             - Simply confirm the item was added and ask if they want to add anything else or checkout.
+             - Simply confirm the item was added (e.g., "Okay, Regular Fries added.") and ask if they want to add anything else or checkout. Use plain text.
 
         In addition to your text response, you must also manage and return the user's cart state.
         You need to parse the user's intent and:
@@ -670,7 +794,7 @@ class FoodOrderingWorkflow(Workflow):
         
         When responding, output BOTH:
         1. A conversational text message acknowledging the user's action.
-           - After modifying the cart (add/remove/change), confirm the current state of the cart and ask if they want to add anything else or proceed to checkout.
+           - After modifying the cart (add/remove/change), confirm the current state of the cart and ask if they want to add anything else or proceed to checkout. Use plain text.
         2. A valid JSON representation of their updated cart
         
         The cart should be a JSON array of objects with properties:
@@ -681,7 +805,7 @@ class FoodOrderingWorkflow(Workflow):
         
         FORMAT:
         {{
-          "response": "Your natural language response here. Guide towards checkout if appropriate.",
+          "response": "Your plain text natural language response here. Guide towards checkout if appropriate.",
           "cart": [updated cart items]
         }}
         
@@ -693,7 +817,7 @@ class FoodOrderingWorkflow(Workflow):
         User: "Can I have a Classic Chicken Sandwich?"
         Assistant Output (JSON):
         {{
-          "response": "Great choice! Added Classic Chicken Sandwich ($8.99) to your cart. Would you like to add any options like Add Cheese (+$1.00), Add Bacon (+$1.50), Make It Spicy (+$0.50), or Substitute Grilled Chicken (no charge)? Or let me know if you want to add more items or checkout!",
+          "response": "Great choice! Added Classic Chicken Sandwich ($8.99) to your cart. Would you like to add any options?\\nA. Add Cheese (+$1.00)\\nB. Add Bacon (+$1.50)\\nC. Make It Spicy (+$0.50)\\nD. Substitute Grilled Chicken (no charge)\\nOr let me know if you want to add more items or checkout!",
           "cart": [{{"item": "Classic Chicken Sandwich", "quantity": 1, "price": 8.99, "options": []}}]
         }}
 
@@ -701,7 +825,7 @@ class FoodOrderingWorkflow(Workflow):
         User: "Add a coke"
         Assistant Output (JSON):
         {{
-          "response": "Sure thing. We have Small Coke ($2.00), Medium Coke ($2.50), and Large Coke ($3.25). Which one would you like?",
+          "response": "Sure thing. We have:\\nA. Small Coke ($2.00)\\nB. Medium Coke ($2.50)\\nC. Large Coke ($3.25)\\nWhich one would you like?",
           "cart": [/* existing cart items */]
         }}
         """
@@ -806,14 +930,14 @@ class FoodOrderingWorkflow(Workflow):
             return response_content, cart_items
         except Exception as e:
             logger.error(f"_handle_order_query: Error: {type(e).__name__}: {str(e)}")
-            return f"I'm sorry, I had trouble with your order. Error: {str(e)}", []
+            return f"I'm sorry, I had trouble with your order. Error: {str(e)}", [] # Plain text error
     
     async def _handle_end_conversation(self, query: str) -> str:
         """Handle end of conversation"""
         end_template = """
         The user seems to be ending the conversation.
         **Consider the conversation history for context if appropriate (e.g., thanking them for an order).**
-        Respond with a friendly, concise goodbye message that invites them to return.
+        Respond with a friendly, concise, **plain text** goodbye message that invites them to return. Do not use markdown.
         """
         
         messages = self.chat_history + [
@@ -878,7 +1002,7 @@ class FoodOrderingWorkflow(Workflow):
             return response.message.content
         except Exception as e:
             logger.error(f"_handle_end_conversation: Error: {type(e).__name__}: {str(e)}")
-            return f"I'm sorry, I had trouble saying goodbye. Error: {str(e)}"
+            return f"I'm sorry, I had trouble saying goodbye. Error: {str(e)}" # Plain text error
 
     async def _handle_order_confirmation(self, query: str) -> tuple:
         """Handle order confirmation actions"""
@@ -941,11 +1065,11 @@ class FoodOrderingWorkflow(Workflow):
         1. If the cart is empty, tell them they need to add items first.
         2. If there are items in the cart and the user is finishing their order without explicitly confirming it: 
            - Start the response with "Your order:".
-           - List EACH item from the `cart`. Include quantity, name, any options (concisely), and the item's calculated price (quantity * unit price).
-           - After listing ALL items, include the total price.
-           - Ask for confirmation: "Would you like to confirm this order?".
+           - List EACH item from the `cart`. Use plain text (no markdown). Include quantity, any options (concisely), and the item's calculated price (quantity * unit price). Use a bulleted list (`- ` or `* `) for the items.
+           - After listing ALL items, include the total price (e.g., "Total: $XX.XX").
+           - Ask for confirmation with LETTER CHOICES: "Would you like to confirm this order?\\nA. Yes, confirm my order\\nB. No, I'd like to make changes"
            - Set status to "PENDING CONFIRMATION".
-        3. If the user is explicitly confirming a previous confirmation request, thank them, set status to "CONFIRMED".
+        3. If the user is explicitly confirming a previous confirmation request, thank them, set status to "CONFIRMED". Use plain text.
         
         FORMAT (empty cart):
         {{
@@ -956,7 +1080,7 @@ class FoodOrderingWorkflow(Workflow):
         
         FORMAT (items in cart, user is finishing order but hasn't confirmed):
         {{
-          "response": "Your order:\\n- 1 Classic Chicken Sandwich (extra cheese): $9.99\\n- 2 Sodas (Large): $6.50\\nTotal: $16.49\\nWould you like to confirm this order?",
+          "response": "Your order:\\n- 1 Classic Chicken Sandwich (extra cheese): $9.99\\n- 2 Sodas (Large): $6.50\\n\\nTotal: $16.49\\n\\nWould you like to confirm this order?\\nA. Yes, confirm my order\\nB. No, I'd like to make changes",
           "cart": [existing cart items],
           "cart_status": "PENDING CONFIRMATION"
         }}
@@ -968,7 +1092,7 @@ class FoodOrderingWorkflow(Workflow):
           "cart_status": "CONFIRMED"
         }}
         
-        Based on the cart contents and user message, provide the appropriate response. Ensure the total price is calculated correctly.
+        Based on the cart contents and user message, provide the appropriate plain text response. Ensure the total price is calculated correctly.
         IMPORTANT: Each cart item MUST be a dictionary with "item", "quantity", "price", and "options" fields. The "options" field must be a list.
         Example of a valid cart item: {{\"item\": \"Burger\", \"quantity\": 1, \"price\": 8.99, \"options\": [\"extra cheese\"]}}
         """
@@ -1095,53 +1219,7 @@ class FoodOrderingWorkflow(Workflow):
             return response_content, final_cart_items, cart_status
         except Exception as e:
             logger.error(f"_handle_order_confirmation: Error: {type(e).__name__}: {str(e)}")
-            return f"I'm sorry, I had trouble confirming your order. Error: {str(e)}", [], "OPEN"
-
-    async def _format_response_text(self, raw_text: str) -> str:
-        """Formats raw text from handlers using an LLM for better UI presentation."""
-        if not raw_text or not isinstance(raw_text, str):
-            return raw_text # Return as is if empty or not string
-
-        formatter_prompt = f"""
-        You are a text formatting assistant. Your task is to take the following raw text input and reformat it for clear presentation in a chatbot UI.
-        Apply the following formatting rules:
-        - Use Markdown for lists (e.g., using '*' or '-').
-        - Use Markdown for bolding (e.g., **Item Name**). Bold item names and potentially key terms like "Total:".
-        - Ensure proper sentence structure and capitalization.
-        - Use clear and natural paragraph breaks (newlines). Avoid excessive newlines or unnatural spacing.
-        - If the input contains lists like "A. Item", "B. Item", reformat them into a standard Markdown list.
-        - Correct any obvious typos or grammatical errors if possible without changing the meaning.
-        - Do NOT add any conversational text or explanations. Only output the formatted text.
-
-        Raw Text Input:
-        ---
-        {raw_text}
-        ---
-
-        Formatted Text Output:
-        """
-        
-        try:
-            logger.info("Formatting response text with LLM...")
-            # Using a potentially cheaper/faster model for formatting might be sufficient
-            formatter_llm = OpenAI(model="gpt-4o", temperature=0.0, request_timeout=15) 
-            # Note: Consider gpt-3.5-turbo if speed/cost is a concern and quality is acceptable
-            formatted_response = await formatter_llm.acomplete(formatter_prompt)
-            print("================")
-            print(raw_text)
-            print()
-            print(formatted_response)
-            print("================")
-            formatted_text = formatted_response.text.strip()
-            logger.info("LLM formatting complete.")
-            # Basic validation
-            if not formatted_text:
-                logger.warning("LLM formatter returned empty string, returning raw text.")
-                return raw_text
-            return formatted_text
-        except Exception as e:
-            logger.error(f"Error during LLM formatting: {e}. Returning raw text.")
-            return raw_text # Fallback to raw text on error
+            return f"I'm sorry, I had trouble confirming your order. Error: {str(e)}", [], "OPEN" # Plain text error
 
 def create_chat_engine(menu: Dict[str, Dict[str, Any]], chat_history: List[Dict[str, str]] = None):
     """
@@ -1172,8 +1250,5 @@ def create_chat_engine(menu: Dict[str, Dict[str, Any]], chat_history: List[Dict[
     
     # The @step decorators automatically register and link the steps based on type hints.
     # Explicit add_step calls are not needed here.
-    # workflow.add_step(workflow.classify_and_respond)
-    # workflow.add_step(workflow.generate_detailed_response, input_step_name="classify_and_respond")
-    # workflow.add_step(workflow.finalize, input_step_name="generate_detailed_response")
     
     return workflow 
