@@ -1,6 +1,7 @@
 import streamlit as st
 from typing import List, Dict, Any
 import logging
+import re  # Add regex import for text fixing
 
 def display_cart(cart_items: List[Dict[str, Any]]):
     """Displays the shopping cart in the top right corner of the UI."""
@@ -184,9 +185,6 @@ def display_chat_messages(messages: List[Dict[str, str]], response_times: Dict[i
     for i, message in enumerate(messages):
         with st.chat_message(message["role"]):
             content = message["content"]
-            # For assistant messages, replace \n with markdown line break (space-space-newline)
-            if message["role"] == "assistant":
-                content = content.replace('\n', '  \n') 
             st.markdown(content, unsafe_allow_html=False)
             
             # Display response time and token counts if available for assistant messages

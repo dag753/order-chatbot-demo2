@@ -42,7 +42,7 @@ class FoodOrderingWorkflow(Workflow):
     
     def __init__(self, menu: Dict[str, Dict[str, Any]], chat_history: List[ChatMessage] = None, timeout: float = 60.0):
         # Configure LLM settings - do this before calling super().__init__()
-        Settings.llm = OpenAI(model="o3-mini", request_timeout=30)
+        Settings.llm = OpenAI(model="gpt-4o", request_timeout=30)
         Settings.embed_model = OpenAIEmbedding(model="text-embedding-ada-002")
         
         # Call super().__init__() with explicit timeout
@@ -146,7 +146,7 @@ class FoodOrderingWorkflow(Workflow):
         Ensure no extra text before or after the JSON object.
         """
 
-        llm = OpenAI(model="o3-mini", request_timeout=30)
+        llm = OpenAI(model="gpt-4o", temperature=0.0, request_timeout=30)
         logger.info("Sending intent classification request to OpenAI")
         
         # Measure response time for intent classification
@@ -303,7 +303,7 @@ class FoodOrderingWorkflow(Workflow):
         try:
             if intent == "menu":
                 logger.info("Intent: MENU. Returning acknowledgment.")
-                response = "Give us a moment while we research that for you."
+                response = await self._format_response_text("Give us a moment while we research that for you.")
                 action_type = "menu_inquiry_pending" # Temporary type
                 result = ResponseEvent(
                     response=response,
@@ -316,9 +316,9 @@ class FoodOrderingWorkflow(Workflow):
                 logger.info("Intent: ORDER. Returning acknowledgment.")
                 # Basic check for modification keywords - can be enhanced
                 if any(kw in query.lower() for kw in ["change", "modify", "add", "remove", "update"]):
-                     response = "Give us a moment while we get that order modification ready for you."
+                     response = await self._format_response_text("Give us a moment while we get that order modification ready for you.")
                 else:
-                     response = "Give us a moment while we get that order ready for you."
+                     response = await self._format_response_text("Give us a moment while we get that order ready for you.")
                 action_type = "order_action_pending" # Temporary type
                 result = ResponseEvent(
                     response=response,
@@ -329,7 +329,7 @@ class FoodOrderingWorkflow(Workflow):
                 )
             elif intent == "order_confirmation":
                 logger.info("Intent: ORDER_CONFIRMATION. Handling order confirmation.")
-                response = "Confirming your order..."
+                response = await self._format_response_text("Confirming your order...")
                 action_type = "order_confirmation_pending"
                 result = ResponseEvent(
                     response=response,
@@ -340,7 +340,8 @@ class FoodOrderingWorkflow(Workflow):
                 )
             elif intent == "greeting":
                 logger.info("Handling greeting directly")
-                response = direct_response
+                # Format the direct response before sending
+                response = await self._format_response_text(direct_response)
                 action_type = "greeting"
                 # Log tokens right before creating the event
                 logger.info(f"DEBUG (classify_and_respond): Tokens before creating greeting StopEvent: prompt={prompt_tokens}, completion={completion_tokens}")
@@ -355,7 +356,8 @@ class FoodOrderingWorkflow(Workflow):
             elif intent == "end":
                 logger.info("Handling end conversation")
                 # Call _handle_end_conversation directly as it's simple
-                response = await self._handle_end_conversation(query)
+                raw_response = await self._handle_end_conversation(query)
+                response = await self._format_response_text(raw_response)
                 action_type = "end_conversation"
                 # Return a ChatResponseStopEvent directly for end
                 result = ChatResponseStopEvent(
@@ -367,7 +369,8 @@ class FoodOrderingWorkflow(Workflow):
                 )
             elif intent == "history":
                 logger.info("Handling history query directly")
-                response = direct_response
+                # Format the direct response before sending
+                response = await self._format_response_text(direct_response)
                 action_type = "history_query"
                 # Return a ChatResponseStopEvent directly for history
                 result = ChatResponseStopEvent(
@@ -379,7 +382,8 @@ class FoodOrderingWorkflow(Workflow):
                  )
             elif intent == "irrelevant":
                  logger.info("Handling irrelevant query directly")
-                 response = direct_response
+                 # Format the direct response before sending
+                 response = await self._format_response_text(direct_response)
                  action_type = "irrelevant_query"
                  # Return a ChatResponseStopEvent directly for irrelevant
                  result = ChatResponseStopEvent(
@@ -391,7 +395,7 @@ class FoodOrderingWorkflow(Workflow):
                  )
             else: # Should not happen due to validation, but good to have a fallback
                 logger.error(f"Reached unexpected else block for intent: {intent}")
-                response = "I'm sorry, I'm not sure how to handle that. I can assist with menu questions and orders."
+                response = await self._format_response_text("I'm sorry, I'm not sure how to handle that. I can assist with menu questions and orders.")
                 action_type = "error"
                 # Return a ChatResponseStopEvent directly for error
                 result = ChatResponseStopEvent(
@@ -410,7 +414,7 @@ class FoodOrderingWorkflow(Workflow):
             # Provide a generic refusal in case of errors in handlers
             return ChatResponseStopEvent(
                 result=None,  # Required by StopEvent
-                response="I'm sorry, I encountered an error and cannot process your request. I can only assist with menu questions and food orders.",
+                response=await self._format_response_text("I'm sorry, I encountered an error and cannot process your request. I can only assist with menu questions and food orders."),
                 action_type="error",
                 prompt_tokens=None,
                 completion_tokens=None
@@ -432,7 +436,8 @@ class FoodOrderingWorkflow(Workflow):
         if ev.action_type == "menu_inquiry_pending":
             logger.info("Handling pending menu inquiry")
             if ev.original_query:
-                response_text = await self._handle_menu_query(ev.original_query)
+                raw_response_text = await self._handle_menu_query(ev.original_query)
+                response_text = await self._format_response_text(raw_response_text)
                 # Retrieve tokens stored by the handler
                 prompt_tokens = self.last_prompt_tokens
                 completion_tokens = self.last_completion_tokens
@@ -451,7 +456,8 @@ class FoodOrderingWorkflow(Workflow):
         elif ev.action_type == "order_action_pending":
             logger.info("Handling pending order action")
             if ev.original_query:
-                response_text, cart_items = await self._handle_order_query(ev.original_query)
+                raw_response_text, cart_items = await self._handle_order_query(ev.original_query)
+                response_text = await self._format_response_text(raw_response_text)
                  # Retrieve tokens stored by the handler
                 prompt_tokens = self.last_prompt_tokens
                 completion_tokens = self.last_completion_tokens
@@ -470,7 +476,8 @@ class FoodOrderingWorkflow(Workflow):
         elif ev.action_type == "order_confirmation_pending":
             logger.info("Handling pending order confirmation")
             if ev.original_query:
-                response_text, cart_items, cart_status = await self._handle_order_confirmation(ev.original_query)
+                raw_response_text, cart_items, cart_status = await self._handle_order_confirmation(ev.original_query)
+                response_text = await self._format_response_text(raw_response_text)
                 # Retrieve tokens stored by the handler
                 prompt_tokens = self.last_prompt_tokens
                 completion_tokens = self.last_completion_tokens
@@ -491,9 +498,12 @@ class FoodOrderingWorkflow(Workflow):
             # If action type is already final (greeting, end, irrelevant, error, history), pass through
             # Explicitly create a new event object to avoid potential issues with object identity.
             logger.info(f"Passing through response with final action_type: {ev.action_type} by creating new event")
+            # Format the response text even when passing through, just in case it wasn't formatted yet
+            # (e.g., if it came directly from classify_and_respond's direct handling)
+            formatted_response = await self._format_response_text(ev.response)
             # Use the tokens from the incoming event, as no new handler was called
             return ResponseEvent(
-                response=ev.response,
+                response=formatted_response,
                 action_type=ev.action_type,
                 original_query=ev.original_query, # Ensure all relevant fields are copied
                 cart_items=ev.cart_items, # Pass through cart items
@@ -536,32 +546,28 @@ class FoodOrderingWorkflow(Workflow):
         """Handle menu-related queries"""
         menu_template = f"""
         You are a helpful restaurant assistant providing information about menu items and guiding users towards placing an order.
-        Respond concisely, like a text message (under 320 characters).
-        Summarize information where possible, especially if the user asks for general categories or multiple items.
         **Use the provided conversation history to understand the context and avoid repeating information unnecessarily.**
         
         **Presenting Options:**
-        - When presenting specific items or options from the menu (e.g., sizes, toppings, different types of drinks), list them using CAPITAL LETTERS (A, B, C...). 
-        - Clearly state that the user can reply with either the LETTER or the full NAME of the option.
+        - When presenting specific items or options from the menu (e.g., sizes, toppings, different types of drinks), list them clearly.
         
         **Handling Follow-up for "More Details":**
         - If the user asks for "more details" after you've provided a summary, look at your *immediately preceding message* in the history.
         - Identify the items you summarized in that message.
         - Provide the *additional* details (like descriptions, options, ingredients) for *only those items*.
-        - Do NOT repeat the item names and prices from the summary unless essential for context (e.g., listing options with price modifiers).
-        - Keep the response concise and under the character limit.
+        - Do NOT repeat the item names and prices from the summary unless essential for context.
         
         **Guiding towards Purchase:**
         - After providing information about an item or category, gently ask if the user would like to add anything to their order or if they need more information.
         
         Be friendly and informative about prices and descriptions.
-        Use standard text formatting. Avoid complex markdown. Use bold (**) for item names only.
+        Use standard text formatting. Avoid complex markdown initially. Use bold (**) for item names only.
         The complete menu is as follows:
         {self.menu_text}
         
         **Example Interaction (Presenting Options):**
         User: "What kind of pizzas do you have?"
-        Assistant: "We have a few options:\nA. **Pepperoni Pizza**: $12.00\nB. **Margherita Pizza**: $11.00\nC. **Veggie Pizza**: $11.50\nYou can reply with the letter (A, B, C) or the name. Would you like to add one to your order or hear more details?"
+        Assistant: "We have Pepperoni Pizza ($12.00), Margherita Pizza ($11.00), and Veggie Pizza ($11.50). Would you like to add one to your order or hear more details?"
         """
         
         # Generate response
@@ -571,7 +577,7 @@ class FoodOrderingWorkflow(Workflow):
         ]
         
         logger.info("_handle_menu_query: Sending request to OpenAI")
-        llm = OpenAI(model="o3-mini", request_timeout=30)
+        llm = OpenAI(model="gpt-4o", temperature=0.0, request_timeout=30)
         try:
             # Measure response time for menu query
             start_time = time.time()
@@ -636,50 +642,47 @@ class FoodOrderingWorkflow(Workflow):
         """Handle order-related actions"""
         order_template = f"""
         You are an assistant helping with food orders and guiding the user towards completing their purchase.
-        Respond concisely, like a text message (under 320 characters).
         **Use the provided conversation history to understand the current order status and context.**
         Be clear about prices and options. Summarize complex orders or options if necessary.
         Offer to provide more detail if needed.
         If they want something not on the menu, politely inform them it's unavailable.
         
         **Presenting Options (General):**
-        - When presenting choices related to the order (e.g., confirming removal, asking about different SIZES or TYPES like Coke vs Sprite), list them using CAPITAL LETTERS (A, B, C...). 
-        - Clearly state that the user can reply with either the LETTER or the full NAME/description of the option.
+        - When presenting choices related to the order (e.g., confirming removal, asking about different SIZES or TYPES like Coke vs Sprite), list them clearly.
         
         **Presenting Options (Item-Specific Add-ons/Modifications):**
         - **If the user adds an item that has specific options listed in the menu (like add cheese, add bacon, make it spicy for a sandwich):**
-            - First, confirm the item was added (e.g., \"Great choice! Added Classic Chicken Sandwich to your cart.\").
-            - Then, on a **new line**, ask if they want to add any of *its specific options*.
-            - List these specific options using the **A, B, C... format**, including the price modifier (e.g., `+$.50`, `(no charge)`).
-            - Example: \"Would you like to add any options?\\nA. Add Cheese: +$1.00\\nB. Add Bacon: +$1.50\\nC. Make It Spicy: +$0.50\\nD. Substitute Grilled Chicken: (no charge)\\nPlease reply with the letter or option name. Or let me know if you want to add more items or checkout!\".
-            - Finally, ask what they want to do next (add options, add more items, checkout).
+            - First, confirm the item was added (e.g., "Great choice! Added Classic Chicken Sandwich to your cart.").
+            - Then, ask if they want to add any of *its specific options*.
+            - List these specific options clearly, including the price modifier (e.g., `+$.50`, `(no charge)`).
+            - Example: "Would you like to add any options like Add Cheese (+$1.00), Add Bacon (+$1.50), Make It Spicy (+$0.50), or Substitute Grilled Chicken (no charge)? Let me know if you want to add options, add more items, or checkout!".
         - **If the user adds an item with NO specific options listed in the menu:**
              - Simply confirm the item was added and ask if they want to add anything else or checkout.
 
         In addition to your text response, you must also manage and return the user's cart state.
         You need to parse the user's intent and:
-        1. For \"add\" - add items to the cart
-        2. For \"remove\" - remove items from the cart
-        3. For \"change\" - modify existing items (e.g., change quantity, options)
-        4. For \"upgrade\" - upgrade items (e.g., size, add-ons)
-        5. For \"cancel order\" - empty the cart
-        6. For \"make order\" / \"checkout\" / \"confirm\" - This should be handled by the ORDER_CONFIRMATION intent, but acknowledge if the user explicitly mentions it here and potentially ask if they are ready to confirm.
+        1. For "add" - add items to the cart
+        2. For "remove" - remove items from the cart
+        3. For "change" - modify existing items (e.g., change quantity, options)
+        4. For "upgrade" - upgrade items (e.g., size, add-ons)
+        5. For "cancel order" - empty the cart
+        6. For "make order" / "checkout" / "confirm" - This should be handled by the ORDER_CONFIRMATION intent, but acknowledge if the user explicitly mentions it here and potentially ask if they are ready to confirm.
         
         When responding, output BOTH:
-        1. A conversational text message acknowledging the user\'s action. 
+        1. A conversational text message acknowledging the user's action.
            - After modifying the cart (add/remove/change), confirm the current state of the cart and ask if they want to add anything else or proceed to checkout.
         2. A valid JSON representation of their updated cart
         
         The cart should be a JSON array of objects with properties:
-        - \"item\": string - the menu item name
-        - \"quantity\": number - how many of this item
-        - \"options\": array of strings - any options/modifications
-        - \"price\": number - the unit price of this item including options
+        - "item": string - the menu item name
+        - "quantity": number - how many of this item
+        - "options": array of strings - any options/modifications
+        - "price": number - the unit price of this item including options
         
         FORMAT:
         {{
-          \"response\": \"Your natural language response here, following the Option Presentation rules above. Guide towards checkout if appropriate.\",
-          \"cart\": [updated cart items]
+          "response": "Your natural language response here. Guide towards checkout if appropriate.",
+          "cart": [updated cart items]
         }}
         
         Based on the menu information and the user\'s request, help them place or modify their order.
@@ -690,7 +693,7 @@ class FoodOrderingWorkflow(Workflow):
         User: "Can I have a Classic Chicken Sandwich?"
         Assistant Output (JSON):
         {{
-          "response": "Great choice! Added Classic Chicken Sandwich ($8.99) to your cart.\\nWould you like to add any options?\\nA. Add Cheese: +$1.00\\nB. Add Bacon: +$1.50\\nC. Make It Spicy: +$0.50\\nD. Substitute Grilled Chicken: (no charge)\\nPlease reply with the letter or option name. Or let me know if you want to add more items or checkout!",
+          "response": "Great choice! Added Classic Chicken Sandwich ($8.99) to your cart. Would you like to add any options like Add Cheese (+$1.00), Add Bacon (+$1.50), Make It Spicy (+$0.50), or Substitute Grilled Chicken (no charge)? Or let me know if you want to add more items or checkout!",
           "cart": [{{"item": "Classic Chicken Sandwich", "quantity": 1, "price": 8.99, "options": []}}]
         }}
 
@@ -698,7 +701,7 @@ class FoodOrderingWorkflow(Workflow):
         User: "Add a coke"
         Assistant Output (JSON):
         {{
-          "response": "Sure thing. We have a few sizes:\\nA. Small Coke: $2.00\\nB. Medium Coke: $2.50\\nC. Large Coke: $3.25\\nYou can reply with the letter (A, B, C) or the size name. Which one would you like?",
+          "response": "Sure thing. We have Small Coke ($2.00), Medium Coke ($2.50), and Large Coke ($3.25). Which one would you like?",
           "cart": [/* existing cart items */]
         }}
         """
@@ -710,7 +713,7 @@ class FoodOrderingWorkflow(Workflow):
         ]
         
         logger.info("_handle_order_query: Sending request to OpenAI")
-        llm = OpenAI(model="o3-mini", request_timeout=30)
+        llm = OpenAI(model="gpt-4o", temperature=0.0, request_timeout=30)
         try:
             start_time = time.time()
             response = await llm.achat(messages)
@@ -810,7 +813,7 @@ class FoodOrderingWorkflow(Workflow):
         end_template = """
         The user seems to be ending the conversation.
         **Consider the conversation history for context if appropriate (e.g., thanking them for an order).**
-        Respond with a friendly, concise goodbye message (under 320 characters) that invites them to return.
+        Respond with a friendly, concise goodbye message that invites them to return.
         """
         
         messages = self.chat_history + [
@@ -819,7 +822,7 @@ class FoodOrderingWorkflow(Workflow):
         ]
         
         logger.info("_handle_end_conversation: Sending request to OpenAI")
-        llm = OpenAI(model="o3-mini", request_timeout=30)
+        llm = OpenAI(model="gpt-4o", temperature=0.0, request_timeout=30)
         try:
             start_time = time.time()
             response = await llm.achat(messages)
@@ -926,7 +929,6 @@ class FoodOrderingWorkflow(Workflow):
             
         confirmation_template = f"""
         You are a helpful restaurant assistant confirming an order.
-        Respond concisely, like a text message (under 320 characters).
         
         **User's current message:** "{query}"
         
@@ -938,11 +940,10 @@ class FoodOrderingWorkflow(Workflow):
         **Instructions:**
         1. If the cart is empty, tell them they need to add items first.
         2. If there are items in the cart and the user is finishing their order without explicitly confirming it: 
-           - Start the response with "Your order:\n".
-           - List EACH item from the `cart` on a **separate new line**, starting with a hyphen (`- `). Include quantity, name, any options (concisely), and the item's calculated price (quantity * unit price).
-           - **IMPORTANT**: After listing ALL items, add a **new separate line** for the total price, formatted exactly as: "Total: $[calculated total price]".
-           - **IMPORTANT**: On another **new separate line** after the total, ask for confirmation exactly like this: "Would you like to confirm this order?".
-           - Ensure the item list, total, and confirmation question are distinctly on separate lines.
+           - Start the response with "Your order:".
+           - List EACH item from the `cart`. Include quantity, name, any options (concisely), and the item's calculated price (quantity * unit price).
+           - After listing ALL items, include the total price.
+           - Ask for confirmation: "Would you like to confirm this order?".
            - Set status to "PENDING CONFIRMATION".
         3. If the user is explicitly confirming a previous confirmation request, thank them, set status to "CONFIRMED".
         
@@ -955,7 +956,7 @@ class FoodOrderingWorkflow(Workflow):
         
         FORMAT (items in cart, user is finishing order but hasn't confirmed):
         {{
-          "response": "Your order:\\n- 1 Classic Chicken Sandwich (extra cheese): $9.99\\n- 2 Sodas (Large): $6.50\\nTotal: $16.49\\nWould you like to confirm this order?\",
+          "response": "Your order:\\n- 1 Classic Chicken Sandwich (extra cheese): $9.99\\n- 2 Sodas (Large): $6.50\\nTotal: $16.49\\nWould you like to confirm this order?",
           "cart": [existing cart items],
           "cart_status": "PENDING CONFIRMATION"
         }}
@@ -979,7 +980,7 @@ class FoodOrderingWorkflow(Workflow):
         ]
         
         logger.info("_handle_order_confirmation: Sending request to OpenAI")
-        llm = OpenAI(model="o3-mini", request_timeout=30)
+        llm = OpenAI(model="gpt-4o", temperature=0.0, request_timeout=30)
         try:
             start_time = time.time()
             response = await llm.achat(messages)
@@ -1095,6 +1096,52 @@ class FoodOrderingWorkflow(Workflow):
         except Exception as e:
             logger.error(f"_handle_order_confirmation: Error: {type(e).__name__}: {str(e)}")
             return f"I'm sorry, I had trouble confirming your order. Error: {str(e)}", [], "OPEN"
+
+    async def _format_response_text(self, raw_text: str) -> str:
+        """Formats raw text from handlers using an LLM for better UI presentation."""
+        if not raw_text or not isinstance(raw_text, str):
+            return raw_text # Return as is if empty or not string
+
+        formatter_prompt = f"""
+        You are a text formatting assistant. Your task is to take the following raw text input and reformat it for clear presentation in a chatbot UI.
+        Apply the following formatting rules:
+        - Use Markdown for lists (e.g., using '*' or '-').
+        - Use Markdown for bolding (e.g., **Item Name**). Bold item names and potentially key terms like "Total:".
+        - Ensure proper sentence structure and capitalization.
+        - Use clear and natural paragraph breaks (newlines). Avoid excessive newlines or unnatural spacing.
+        - If the input contains lists like "A. Item", "B. Item", reformat them into a standard Markdown list.
+        - Correct any obvious typos or grammatical errors if possible without changing the meaning.
+        - Do NOT add any conversational text or explanations. Only output the formatted text.
+
+        Raw Text Input:
+        ---
+        {raw_text}
+        ---
+
+        Formatted Text Output:
+        """
+        
+        try:
+            logger.info("Formatting response text with LLM...")
+            # Using a potentially cheaper/faster model for formatting might be sufficient
+            formatter_llm = OpenAI(model="gpt-4o", temperature=0.0, request_timeout=15) 
+            # Note: Consider gpt-3.5-turbo if speed/cost is a concern and quality is acceptable
+            formatted_response = await formatter_llm.acomplete(formatter_prompt)
+            print("================")
+            print(raw_text)
+            print()
+            print(formatted_response)
+            print("================")
+            formatted_text = formatted_response.text.strip()
+            logger.info("LLM formatting complete.")
+            # Basic validation
+            if not formatted_text:
+                logger.warning("LLM formatter returned empty string, returning raw text.")
+                return raw_text
+            return formatted_text
+        except Exception as e:
+            logger.error(f"Error during LLM formatting: {e}. Returning raw text.")
+            return raw_text # Fallback to raw text on error
 
 def create_chat_engine(menu: Dict[str, Dict[str, Any]], chat_history: List[Dict[str, str]] = None):
     """

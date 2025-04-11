@@ -178,14 +178,15 @@ async def handle_chat_submission(prompt: str):
                 logger.warning(f"Found empty response: {response_event.response}")
                 action_type = "error" # Treat as error
             else:
-                # Clean up response using the helper function
-                # Temporarily disable cleaning to test formatting
-                # initial_message_content = clean_response_text(initial_message_content)
                 # Check for problematic fragments after cleaning (or lack thereof)
                 if not initial_message_content or initial_message_content.strip() in ['{', '}', '[]', '[', ']', '{}']:
                     initial_message_content = "I'm sorry, I didn't generate a proper initial response. Please try again."
                     logger.warning(f"Found invalid fragment before/without cleaning: {response_event.response}")
                     action_type = "error"
+                # Apply basic text cleaning in case formatting wasn't done upstream
+                elif isinstance(initial_message_content, str):
+                    initial_message_content = clean_response_text(initial_message_content)
+                    logger.info("Applied text cleaning to Stage 1 response")
         
         # Display initial message (or error) in the first placeholder
         with chat_message_placeholder:
@@ -311,6 +312,17 @@ async def handle_chat_submission(prompt: str):
                          detailed_response_content = "I'm sorry, I didn't receive valid details."
                          final_action_type = "error"
                          logger.warning("Received empty/invalid details in stage 2.")
+                    
+                    # Format the response text using the LLM formatter
+                    try:
+                        logger.info("Formatting Stage 2 response text with LLM...")
+                        detailed_response_content = await chat_workflow._format_response_text(detailed_response_content)
+                    except Exception as format_err:
+                        logger.error(f"Error formatting Stage 2 response: {format_err}")
+                        # Continue with unformatted text
+                        # Apply basic text cleaning as fallback
+                        detailed_response_content = clean_response_text(detailed_response_content)
+                        logger.info("Applied fallback text cleaning after formatting failure")
 
                 except Exception as e:
                     logger.error(f"Error in stage 2 handling ({action_type}): {e}", exc_info=True)
@@ -319,16 +331,6 @@ async def handle_chat_submission(prompt: str):
                     # Ensure tokens are None if stage 2 failed
                     stage2_prompt_tokens = None
                     stage2_completion_tokens = None 
-
-                # --- CLEANING detailed response --- (Temporarily disable)
-                # if isinstance(detailed_response_content, str):
-                #     # Clean using the helper function
-                #     detailed_response_content = clean_response_text(detailed_response_content)
-                #     # Check for problematic fragments after cleaning
-                #     if not detailed_response_content or detailed_response_content.strip() in ['{', '}', '[]', '[', ']', '{}']:
-                #          detailed_response_content = "I'm sorry, I didn't receive valid details."
-                #          final_action_type = "error"
-                #          logger.warning("Received empty/invalid details in stage 2 after cleaning.")
 
                 stage2_time = time.time() - stage2_start_time
                 logger.info(f"Stage 2 processing time: {stage2_time:.2f}s (Tokens: p={stage2_prompt_tokens}, c={stage2_completion_tokens})") # Log retrieved tokens
