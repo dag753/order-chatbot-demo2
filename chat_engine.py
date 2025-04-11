@@ -42,7 +42,7 @@ class FoodOrderingWorkflow(Workflow):
     
     def __init__(self, menu: Dict[str, Dict[str, Any]], chat_history: List[ChatMessage] = None, timeout: float = 60.0):
         # Configure LLM settings - do this before calling super().__init__()
-        Settings.llm = OpenAI(model="gpt-4o", temperature=0.7, request_timeout=30)
+        Settings.llm = OpenAI(model="o3-mini", request_timeout=30)
         Settings.embed_model = OpenAIEmbedding(model="text-embedding-ada-002")
         
         # Call super().__init__() with explicit timeout
@@ -146,7 +146,7 @@ class FoodOrderingWorkflow(Workflow):
         Ensure no extra text before or after the JSON object.
         """
 
-        llm = OpenAI(model="gpt-4o", temperature=0.0, request_timeout=30)
+        llm = OpenAI(model="o3-mini", request_timeout=30)
         logger.info("Sending intent classification request to OpenAI")
         
         # Measure response time for intent classification
@@ -571,7 +571,7 @@ class FoodOrderingWorkflow(Workflow):
         ]
         
         logger.info("_handle_menu_query: Sending request to OpenAI")
-        llm = OpenAI(model="gpt-4o", temperature=0.7, request_timeout=30)
+        llm = OpenAI(model="o3-mini", request_timeout=30)
         try:
             # Measure response time for menu query
             start_time = time.time()
@@ -642,43 +642,65 @@ class FoodOrderingWorkflow(Workflow):
         Offer to provide more detail if needed.
         If they want something not on the menu, politely inform them it's unavailable.
         
-        **Presenting Options:**
-        - When presenting choices related to the order (e.g., confirming removal, asking about options for an item being added), list them using CAPITAL LETTERS (A, B, C...). 
+        **Presenting Options (General):**
+        - When presenting choices related to the order (e.g., confirming removal, asking about different SIZES or TYPES like Coke vs Sprite), list them using CAPITAL LETTERS (A, B, C...). 
         - Clearly state that the user can reply with either the LETTER or the full NAME/description of the option.
+        
+        **Presenting Options (Item-Specific Add-ons/Modifications):**
+        - **If the user adds an item that has specific options listed in the menu (like add cheese, add bacon, make it spicy for a sandwich):**
+            - First, confirm the item was added (e.g., \"Great choice! Added Classic Chicken Sandwich to your cart.\").
+            - Then, on a **new line**, ask if they want to add any of *its specific options*.
+            - List these specific options using the **A, B, C... format**, including the price modifier (e.g., `+$.50`, `(no charge)`).
+            - Example: \"Would you like to add any options?\\nA. Add Cheese: +$1.00\\nB. Add Bacon: +$1.50\\nC. Make It Spicy: +$0.50\\nD. Substitute Grilled Chicken: (no charge)\\nPlease reply with the letter or option name. Or let me know if you want to add more items or checkout!\".
+            - Finally, ask what they want to do next (add options, add more items, checkout).
+        - **If the user adds an item with NO specific options listed in the menu:**
+             - Simply confirm the item was added and ask if they want to add anything else or checkout.
 
         In addition to your text response, you must also manage and return the user's cart state.
         You need to parse the user's intent and:
-        1. For "add" - add items to the cart
-        2. For "remove" - remove items from the cart
-        3. For "change" - modify existing items (e.g., change quantity, options)
-        4. For "upgrade" - upgrade items (e.g., size, add-ons)
-        5. For "cancel order" - empty the cart
-        6. For "make order" / "checkout" / "confirm" - This should be handled by the ORDER_CONFIRMATION intent, but acknowledge if the user explicitly mentions it here and potentially ask if they are ready to confirm.
+        1. For \"add\" - add items to the cart
+        2. For \"remove\" - remove items from the cart
+        3. For \"change\" - modify existing items (e.g., change quantity, options)
+        4. For \"upgrade\" - upgrade items (e.g., size, add-ons)
+        5. For \"cancel order\" - empty the cart
+        6. For \"make order\" / \"checkout\" / \"confirm\" - This should be handled by the ORDER_CONFIRMATION intent, but acknowledge if the user explicitly mentions it here and potentially ask if they are ready to confirm.
         
         When responding, output BOTH:
-        1. A conversational text message acknowledging the user's action. 
+        1. A conversational text message acknowledging the user\'s action. 
            - After modifying the cart (add/remove/change), confirm the current state of the cart and ask if they want to add anything else or proceed to checkout.
         2. A valid JSON representation of their updated cart
         
         The cart should be a JSON array of objects with properties:
-        - "item": string - the menu item name
-        - "quantity": number - how many of this item
-        - "options": array of strings - any options/modifications
-        - "price": number - the unit price of this item including options
+        - \"item\": string - the menu item name
+        - \"quantity\": number - how many of this item
+        - \"options\": array of strings - any options/modifications
+        - \"price\": number - the unit price of this item including options
         
         FORMAT:
         {{
-          "response": "Your natural language response here, gently guiding towards checkout if appropriate.",
-          "cart": [updated cart items]
+          \"response\": \"Your natural language response here, following the Option Presentation rules above. Guide towards checkout if appropriate.\",
+          \"cart\": [updated cart items]
         }}
         
-        Based on the menu information and the user's request, help them place or modify their order.
+        Based on the menu information and the user\'s request, help them place or modify their order.
         The complete menu is as follows:
         {self.menu_text}
         
-        **Example Interaction (Presenting Options):**
+        **Example Interaction (Item with Options):**
+        User: "Can I have a Classic Chicken Sandwich?"
+        Assistant Output (JSON):
+        {{
+          "response": "Great choice! Added Classic Chicken Sandwich ($8.99) to your cart.\\nWould you like to add any options?\\nA. Add Cheese: +$1.00\\nB. Add Bacon: +$1.50\\nC. Make It Spicy: +$0.50\\nD. Substitute Grilled Chicken: (no charge)\\nPlease reply with the letter or option name. Or let me know if you want to add more items or checkout!",
+          "cart": [{{"item": "Classic Chicken Sandwich", "quantity": 1, "price": 8.99, "options": []}}]
+        }}
+
+        **Example Interaction (General Choice - Size):**
         User: "Add a coke"
-        Assistant: "Sure thing. We have a few sizes:\nA. **Regular Coke**: $2.00\nB. **Large Coke**: $2.75\nYou can reply with the letter (A, B) or the size name. Which one would you like?"
+        Assistant Output (JSON):
+        {{
+          "response": "Sure thing. We have a few sizes:\\nA. Small Coke: $2.00\\nB. Medium Coke: $2.50\\nC. Large Coke: $3.25\\nYou can reply with the letter (A, B, C) or the size name. Which one would you like?",
+          "cart": [/* existing cart items */]
+        }}
         """
         
         # Generate response
@@ -688,7 +710,7 @@ class FoodOrderingWorkflow(Workflow):
         ]
         
         logger.info("_handle_order_query: Sending request to OpenAI")
-        llm = OpenAI(model="gpt-4o", temperature=0.7, request_timeout=30)
+        llm = OpenAI(model="o3-mini", request_timeout=30)
         try:
             start_time = time.time()
             response = await llm.achat(messages)
@@ -797,7 +819,7 @@ class FoodOrderingWorkflow(Workflow):
         ]
         
         logger.info("_handle_end_conversation: Sending request to OpenAI")
-        llm = OpenAI(model="gpt-4o", temperature=0.7, request_timeout=30)
+        llm = OpenAI(model="o3-mini", request_timeout=30)
         try:
             start_time = time.time()
             response = await llm.achat(messages)
@@ -918,8 +940,9 @@ class FoodOrderingWorkflow(Workflow):
         2. If there are items in the cart and the user is finishing their order without explicitly confirming it: 
            - Start the response with "Your order:\n".
            - List EACH item from the `cart` on a **separate new line**, starting with a hyphen (`- `). Include quantity, name, any options (concisely), and the item's calculated price (quantity * unit price).
-           - After the list, add a new line with the **total price** (sum of all item prices) formatted as "Total: $[calculated total price]".
-           - Finally, add a new line asking for confirmation: "Would you like to confirm this order?".
+           - **IMPORTANT**: After listing ALL items, add a **new separate line** for the total price, formatted exactly as: "Total: $[calculated total price]".
+           - **IMPORTANT**: On another **new separate line** after the total, ask for confirmation exactly like this: "Would you like to confirm this order?".
+           - Ensure the item list, total, and confirmation question are distinctly on separate lines.
            - Set status to "PENDING CONFIRMATION".
         3. If the user is explicitly confirming a previous confirmation request, thank them, set status to "CONFIRMED".
         
@@ -932,7 +955,7 @@ class FoodOrderingWorkflow(Workflow):
         
         FORMAT (items in cart, user is finishing order but hasn't confirmed):
         {{
-          "response": "Your order:\\n- [Qty] [Item Name] (Options): $[Item Total Price]\\n- [Qty] [Item Name] (Options): $[Item Total Price]\\nTotal: $[Calculated Grand Total Price]\\nWould you like to confirm this order?\",
+          "response": "Your order:\\n- 1 Classic Chicken Sandwich (extra cheese): $9.99\\n- 2 Sodas (Large): $6.50\\nTotal: $16.49\\nWould you like to confirm this order?\",
           "cart": [existing cart items],
           "cart_status": "PENDING CONFIRMATION"
         }}
@@ -956,7 +979,7 @@ class FoodOrderingWorkflow(Workflow):
         ]
         
         logger.info("_handle_order_confirmation: Sending request to OpenAI")
-        llm = OpenAI(model="gpt-4o", temperature=0.7, request_timeout=30)
+        llm = OpenAI(model="o3-mini", request_timeout=30)
         try:
             start_time = time.time()
             response = await llm.achat(messages)
